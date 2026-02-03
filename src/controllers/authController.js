@@ -3,7 +3,13 @@ const { User, Ubicacion, Role } = require('../models');
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
 
+const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+const isStrongPassword = (v) => v && v.length >= 8 && /[A-Z]/.test(v) && /\d/.test(v) && /[\W_]/.test(v);
+const sanitize = (v) => typeof v === 'string' ? v.trim() : v;
+const isNonEmpty = (v) => typeof v === 'string' ? v.trim().length > 0 : v !== undefined && v !== null;
+const isLettersSpaces = (v) => /^[A-Za-zÀ-ÖØ-öø-ÿ\s]+$/.test(v);
 // REGISTRO COMPLETO (Usuario + Ubicación + Captcha)
 const register = async (req, res) => {
     // Iniciamos una transacción (seguridad de datos)
@@ -11,14 +17,51 @@ const register = async (req, res) => {
 
     try {
         // Recibimos los datos estructurados desde el Frontend
-        const { 
-            nombre, 
-            apellido, 
-            telefono, 
-            password, 
-            ubicacion, // Esto será un objeto { calle, numero, codigo_postal, descripcion, alias }
-            recaptchaToken 
-        } = req.body;
+        let { nombre, apellido, email, password, confirmPassword, ubicacion, recaptchaToken } = req.body;
+        nombre = sanitize(nombre);
+        apellido = sanitize(apellido);
+        email = sanitize(email);
+        password = sanitize(password);
+        confirmPassword = sanitize(
+            confirmPassword ??
+            req.body?.confirm_password ??
+            req.body?.password2 ??
+            req.body?.passwordConfirmation ??
+            req.body?.confirm
+        );
+        if (!isNonEmpty(nombre) || !isNonEmpty(apellido) || !isNonEmpty(email) || !isNonEmpty(password) || !ubicacion) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Campos requeridos faltantes.' });
+        }
+        if (!isLettersSpaces(nombre) || !isLettersSpaces(apellido)) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Nombre y apellido inválidos.' });
+        }
+        if (!isEmail(email)) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Correo inválido.' });
+        }
+        if (!isStrongPassword(password)) {
+            await t.rollback();
+            return res.status(400).json({ message: 'La contraseña no cumple los requisitos.' });
+        }
+        if (isNonEmpty(confirmPassword) && password !== confirmPassword) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Las contraseñas no coinciden.' });
+        }
+        if (!ubicacion.calle || !ubicacion.numero || !ubicacion.codigo_postal) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Ubicación incompleta.' });
+        }
+        ubicacion.calle = sanitize(ubicacion.calle);
+        ubicacion.numero = sanitize(ubicacion.numero);
+        ubicacion.codigo_postal = sanitize(ubicacion.codigo_postal);
+        ubicacion.descripcion = sanitize(ubicacion.descripcion || '');
+        ubicacion.alias = sanitize(ubicacion.alias || 'Principal');
+        if (!isNonEmpty(ubicacion.calle) || !isNonEmpty(ubicacion.numero) || !isNonEmpty(ubicacion.codigo_postal)) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Ubicación inválida.' });
+        }
 
         // --- VALIDACIÓN CAPTCHA ---
         if (!recaptchaToken) {
@@ -38,16 +81,16 @@ const register = async (req, res) => {
         // -----------------------------
 
         // --- VALIDAR DUPLICADOS ---
-        const existingUser = await User.findOne({ where: { telefono } });
+        const existingUser = await User.findOne({ where: { email } });
         if (existingUser) {
             await t.rollback();
-            return res.status(400).json({ message: 'Este teléfono ya está registrado.' });
+            return res.status(400).json({ message: 'Este correo ya está registrado.' });
         }
 
         // --- PREPARAR DATOS ---
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const emailCode = Math.floor(100000 + Math.random() * 900000).toString();
 
         // Buscar el ID del rol "cliente"
         const roleCliente = await Role.findOne({ where: { nombre: 'cliente' } });
@@ -60,9 +103,9 @@ const register = async (req, res) => {
         const newUser = await User.create({
             nombre,
             apellido,
-            telefono,
+            email,
             password: hashedPassword,
-            verificationCode: smsCode,
+            verificationCode: emailCode,
             isVerified: false,
             rolId: roleCliente.id
         }, { transaction: t });
@@ -73,22 +116,51 @@ const register = async (req, res) => {
             calle: ubicacion.calle,
             numero: ubicacion.numero,
             codigo_postal: ubicacion.codigo_postal,
-            descripcion: ubicacion.descripcion, // "Casa portón negro..."
+            descripcion: ubicacion.descripcion,
             alias: ubicacion.alias || 'Principal',
-            userId: newUser.id // Aquí hacemos la relación
+            userId: newUser.id
         }, { transaction: t });
 
         // --- CONFIRMAR TRANSACCIÓN ---
         await t.commit();
 
-        // --- SIMULACIÓN SMS ---
-        console.log('=============================================');
-        console.log(`✉️  [SMS GATEWAY] Mensaje para ${telefono}:`);
-        console.log(`🔐  Tu código de verificación es: ${smsCode}`);
-        console.log('=============================================');
+        // Envío de correo
+        let sentByEmail = false;
+        try {
+            if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+                const transporter = nodemailer.createTransport({
+                    host: process.env.SMTP_HOST,
+                    port: Number(process.env.SMTP_PORT) || 587,
+                    secure: false,
+                    auth: {
+                        user: process.env.SMTP_USER,
+                        pass: process.env.SMTP_PASS
+                    }
+                });
+
+                await transporter.sendMail({
+                    from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+                    to: email,
+                    subject: 'Código de verificación',
+                    text: `Tu código de verificación es: ${emailCode}`
+                });
+                sentByEmail = true;
+            }
+        } catch (mailError) {
+            sentByEmail = false;
+        }
+
+        if (!sentByEmail) {
+            console.log('=============================================');
+            console.log(`✉️  [EMAIL SIMULADO] Mensaje para ${email}:`);
+            console.log(`🔐  Tu código de verificación es: ${emailCode}`);
+            console.log('=============================================');
+        }
 
         res.status(201).json({
-            message: 'Registro exitoso. Se ha enviado el código SMS.',
+            message: sentByEmail
+                ? 'Registro exitoso. Revisa tu correo para el código.'
+                : 'Registro exitoso. Código de verificación simulado en servidor.',
             userId: newUser.id
         });
 
@@ -100,12 +172,17 @@ const register = async (req, res) => {
     }
 };
 
-// VERIFICACIÓN DE CÓDIGO (Igual que antes)
+// VERIFICACIÓN DE CÓDIGO 
 const verifyCode = async (req, res) => {
     try {
-        const { telefono, code } = req.body;
+        let { email, code } = req.body;
+        email = sanitize(email);
+        code = sanitize(code);
+        if (!isEmail(email) || !isNonEmpty(code)) {
+            return res.status(400).json({ message: 'Datos inválidos.' });
+        }
 
-        const user = await User.findOne({ where: { telefono } });
+        const user = await User.findOne({ where: { email } });
 
         if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
 
@@ -132,11 +209,16 @@ const verifyCode = async (req, res) => {
 // LOGIN (Para entrar después de verificar)
 const login = async (req, res) => {
     try {
-        const { telefono, password } = req.body;
+        let { email, password } = req.body;
+        email = sanitize(email);
+        password = sanitize(password);
+        if (!isEmail(email) || !isNonEmpty(password)) {
+            return res.status(400).json({ message: 'Datos inválidos.' });
+        }
 
         // Buscar usuario e incluir su Rol
         const user = await User.findOne({ 
-            where: { telefono },
+            where: { email },
             include: [{ model: Role }] 
         });
 
@@ -144,7 +226,7 @@ const login = async (req, res) => {
 
         // Verificar si ya confirmó su SMS
         if (!user.isVerified) {
-            return res.status(403).json({ message: 'Debes verificar tu teléfono primero.' });
+            return res.status(403).json({ message: 'Debes verificar tu correo primero.' });
         }
 
         // Verificar contraseña

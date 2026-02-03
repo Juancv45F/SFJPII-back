@@ -26,7 +26,7 @@ const seedDatabase = async () => {
         const admin = await User.create({
             nombre: 'Juan Pablo',
             apellido: 'Admin',
-            telefono: '4951065080', // Teléfono Admin
+            email: 'admin@sfjpii.local',
             password: passAdmin,
             rolId: rolAdmin.id,
             isVerified: true
@@ -37,7 +37,7 @@ const seedDatabase = async () => {
         const cliente = await User.create({
             nombre: 'Maria',
             apellido: 'Lopez',
-            telefono: '4499998877', // Teléfono Cliente ficticio
+            email: 'cliente@sfjpii.local',
             password: passCliente,
             rolId: rolCliente.id,
             isVerified: true
@@ -167,8 +167,8 @@ const seedDatabase = async () => {
 
         console.log('==============================================');
         console.log('🚀  BASE DE DATOS LISTA PARA USARSE');
-        console.log('    Admin Tel: 4951065080 | Pass: Admin123');
-        console.log('    Cliente Tel: 4499998877 | Pass: Cliente123');
+        console.log('    Admin Email: admin@sfjpii.local | Pass: Admin123');
+        console.log('    Cliente Email: cliente@sfjpii.local | Pass: Cliente123');
         console.log('==============================================');
 
     } catch (error) {

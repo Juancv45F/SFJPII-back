@@ -18,7 +18,7 @@ const dbConnection = async () => {
         console.log('Base de Datos POSTGRESQL conectada exitosamente');
         
         // Sincronizar modelos (crea tablas automáticamente si no existen)
-        await sequelize.sync(); 
+        await sequelize.sync({ alter: true }); 
     } catch (error) {
         console.error('Error al conectar a Postgres:', error);
         throw new Error('Error de conexión a BD');
