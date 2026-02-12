@@ -107,7 +107,7 @@ const register = async (req, res) => {
             password: hashedPassword,
             verificationCode: emailCode,
             isVerified: false,
-            rolId: roleCliente.id
+            roleId: roleCliente.id
         }, { transaction: t });
 
         // --- CREAR UBICACIÓN (Vinculada al nuevo ID) ---
