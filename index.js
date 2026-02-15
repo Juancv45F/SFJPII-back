@@ -6,7 +6,8 @@ const cors = require('cors');
 const { dbConnection } = require('./src/config/database');
 const productRoutes = require('./src/routes/productRoutes');
 const authRoutes = require('./src/routes/authRoutes');
-
+const pedidoRoutes = require('./src/routes/pedidosRoutes');
+const ubicacionesRoutes = require('./src/routes/ubicacionesRoutes')
 
 const app = express();
 
@@ -43,6 +44,7 @@ io.on('connection', (socket) => {
             socket.join('sala_pedidos'); // Sala exclusiva para staff
             console.log(`Usuario ${socket.id} unido a sala_pedidos como ${rol}`);
         }
+        
     });
 
     socket.on('disconnect', () => {
@@ -50,13 +52,15 @@ io.on('connection', (socket) => {
     });
 });
 
+
 // --- IMPORTANTE: Hacer 'io' accesible en los controladores ---
 app.set('socketio', io);
 
 // Rutas
 app.use('/api/productos', productRoutes);
 app.use('/api/auth', authRoutes);
-
+app.use('/api/pedidos',pedidoRoutes);
+app.use('/api/ubicaciones',ubicacionesRoutes);
 
 // Iniciar servidor en puerto correspondiente
 const PORT = process.env.PORT || 3000;

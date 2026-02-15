@@ -71,32 +71,34 @@ const obtenerTodos = async (req, res) => {
 // Actualizar el Stock de un producto 
 const actualizarStock = async (req, res) => {
     try {
-        const { id } = req.params; // Viene de la URL: /productos/:id/stock
-        const { stock } = req.body; // Viene del body: { "stock": 50 }
+        const { id } = req.params;
+        const { stock } = req.body;
 
-        // 1. Validaciones básicas
         if (stock === undefined || isNaN(stock) || stock < 0) {
             return res.status(400).json({ message: 'El valor del stock es inválido.' });
         }
 
-        // 2. Buscar el producto
         const producto = await Producto.findByPk(id);
-
         if (!producto) {
             return res.status(404).json({ message: 'Producto no encontrado.' });
         }
 
-        // 3. Actualizar y guardar
         producto.stock = Number(stock);
         await producto.save();
 
-        // 4. Responder
+        // --- NOTIFICACIÓN WEBSOCKET ---
+        const io = req.app.get('socketio');
+        io.emit('stock_actualizado', {
+            productoId: producto.id,
+            nuevoStock: producto.stock
+        });
+        // ------------------------------
+
         res.status(200).json({
             message: 'Stock actualizado correctamente.',
             productoId: producto.id,
             nuevoStock: producto.stock
         });
-
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Error al actualizar el stock.' });

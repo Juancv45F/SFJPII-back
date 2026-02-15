@@ -37,6 +37,14 @@ Producto.belongsToMany(Pedido, { through: DetallePedido, foreignKey: 'productoId
 Pedido.hasMany(DetallePedido, { foreignKey: 'pedidoId' });
 DetallePedido.belongsTo(Pedido, { foreignKey: 'pedidoId' });
 
+// --- RELACIONES DE DETALLE <-> PRODUCTO ---
+
+// Un detalle pertenece a un producto
+DetallePedido.belongsTo(Producto, { foreignKey: 'productoId' });
+
+// Un producto puede estar en muchos detalles
+Producto.hasMany(DetallePedido, { foreignKey: 'productoId' });
+
 module.exports = {
     Role,
     User,
