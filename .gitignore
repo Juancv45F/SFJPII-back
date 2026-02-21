@@ -10,3 +10,4 @@ npm-debug.log*
 # Environment variables
 .env.development
 .env.production
+/src/public/uploads

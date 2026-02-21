@@ -8,12 +8,18 @@ const productRoutes = require('./src/routes/productRoutes');
 const authRoutes = require('./src/routes/authRoutes');
 const pedidoRoutes = require('./src/routes/pedidosRoutes');
 const ubicacionesRoutes = require('./src/routes/ubicacionesRoutes')
+const path = require('path');
+
+
 
 const app = express();
 
 // Middlewares
 app.use(cors()); // Permitir peticiones externas
 app.use(express.json()); // Que entienda json
+
+// Servir archivos estáticos de la carpeta uploads
+app.use('/uploads', express.static(path.join(__dirname, 'src/public/uploads')));
 
 // Ruta prueba
 app.get('/', (req, res) => {
