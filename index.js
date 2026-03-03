@@ -9,6 +9,8 @@ const authRoutes = require('./src/routes/authRoutes');
 const pedidoRoutes = require('./src/routes/pedidosRoutes');
 const ubicacionesRoutes = require('./src/routes/ubicacionesRoutes')
 const path = require('path');
+const { requestLogger, errorHandler } = require('./src/middlewares/logging');
+const { child } = require('./src/utils/logger');
 
 
 
@@ -17,9 +19,14 @@ const app = express();
 // Middlewares
 app.use(cors()); // Permitir peticiones externas
 app.use(express.json()); // Que entienda json
+app.use(requestLogger); // Correlación y métricas de request
 
 // Servir archivos estáticos de la carpeta uploads
 app.use('/uploads', express.static(path.join(__dirname, 'src/public/uploads')));
+// Servir dashboard público y archivos estáticos generales
+app.use('/public', express.static(path.join(__dirname, 'src/public')));
+// Exponer archivos de análisis de logs para el dashboard
+app.use('/logs', express.static(path.join(__dirname, 'logs')));
 
 // Ruta prueba
 app.get('/', (req, res) => {
@@ -42,19 +49,20 @@ const io = new Server(server, {
 
 // Lógica de conexión de Sockets
 io.on('connection', (socket) => {
-    console.log('Usuario conectado:', socket.id);
+    const logger = child({ component: 'socket', socketId: socket.id });
+    logger.info('socket_connected');
 
     // 1. El usuario se une a una sala según su rol (admin o repartidor)
     socket.on('entrar_sala', (rol) => {
         if (rol === 'admin' || rol === 'repartidor') {
             socket.join('sala_pedidos'); // Sala exclusiva para staff
-            console.log(`Usuario ${socket.id} unido a sala_pedidos como ${rol}`);
+            logger.info('socket_join_room', { context: { room: 'sala_pedidos', rol } });
         }
         
     });
 
     socket.on('disconnect', () => {
-        console.log('Usuario desconectado');
+        logger.info('socket_disconnected');
     });
 });
 
@@ -68,8 +76,34 @@ app.use('/api/auth', authRoutes);
 app.use('/api/pedidos',pedidoRoutes);
 app.use('/api/ubicaciones',ubicacionesRoutes);
 
+// Ruta de diagnóstico para simular latencia
+app.get('/api/debug/delay', async (req, res) => {
+    const ms = Number(req.query.ms) || 600;
+    await new Promise(resolve => setTimeout(resolve, ms));
+    res.json({ ok: true, delayMs: ms });
+});
+
+// Ruta de diagnóstico para provocar un error 500
+app.get('/api/debug/error', (req, res) => {
+    throw new Error('debug_error_triggered');
+});
+
+// Manejo global de errores
+app.use(errorHandler);
+
 // Iniciar servidor en puerto correspondiente
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+    const logger = child();
+    logger.info('server_started', { context: { url: `http://localhost:${PORT}` } });
 })
+
+// Captura global de errores no manejados
+process.on('uncaughtException', (err) => {
+    const logger = child({ component: 'process' });
+    logger.error('uncaught_exception', { context: { stack: err.stack, message: err.message } });
+});
+process.on('unhandledRejection', (reason) => {
+    const logger = child({ component: 'process' });
+    logger.error('unhandled_rejection', { context: { reason } });
+});

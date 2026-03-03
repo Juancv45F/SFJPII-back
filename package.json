@@ -8,7 +8,10 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "seed": "node src/seeds/seed.js",
-    "seed:clean": "node src/seeds/cleanSeed.js"
+    "seed:clean": "node src/seeds/cleanSeed.js",
+    "logs:scenarios": "node scripts/generate-scenarios.js",
+    "logs:analyze": "node scripts/analyze-logs.js",
+    "logs:cleanup": "node scripts/cleanup-scenario-products.js"
   },
   "keywords": [],
   "author": "",

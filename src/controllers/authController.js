@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const { child } = require('../utils/logger');
 
 const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 const isStrongPassword = (v) => v && v.length >= 8 && /[A-Z]/.test(v) && /\d/.test(v) && /[\W_]/.test(v);
@@ -123,6 +124,8 @@ const register = async (req, res) => {
 
         // --- CONFIRMAR TRANSACCIÓN ---
         await t.commit();
+        const regLogger = child({ userId: newUser.id });
+        regLogger.info('usuario_registrado');
 
         // Envío de correo
         let sentByEmail = false;
@@ -167,7 +170,8 @@ const register = async (req, res) => {
     } catch (error) {
         // Si algo falla, deshacemos todo (no se crea usuario ni ubicación)
         await t.rollback();
-        console.error(error);
+        const logger = child();
+        logger.error('registro_error', { context: { message: error.message, stack: error.stack } });
         res.status(500).json({ message: 'Error en el servidor al registrar.' });
     }
 };
@@ -258,9 +262,12 @@ const login = async (req, res) => {
                 rol: user.Role ? user.Role.nombre : 'cliente'
             }
         });
+        const loginLogger = child({ userId: user.id });
+        loginLogger.info('login_exitoso');
 
     } catch (error) {
-        console.error(error);
+        const logger = child();
+        logger.error('login_error', { context: { message: error.message, stack: error.stack } });
         res.status(500).json({ message: 'Error en el login' });
     }
 };

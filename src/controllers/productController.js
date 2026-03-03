@@ -91,13 +91,20 @@ const actualizarStock = async (req, res) => {
             productoId: producto.id,
             nuevoStock: producto.stock
         });
+        if (req.logger) {
+            req.logger.info('stock_actualizado_evento', {
+                context: { productoId: producto.id, nuevoStock: producto.stock }
+            });
+        }
         res.status(200).json({
             message: 'Stock actualizado correctamente.',
             productoId: producto.id,
             nuevoStock: producto.stock
         });
     } catch (error) {
-        console.error(error);
+        if (req.logger) {
+            req.logger.error('producto_error', { context: { message: error.message, stack: error.stack } });
+        }
         res.status(500).json({ message: 'Error al actualizar el stock.' });
     }
 };
@@ -184,8 +191,16 @@ const crearProducto = async (req, res) => {
             imagen: imagenUrl
         });
 
+        if (req.logger) {
+            req.logger.info('producto_creado', {
+                context: { productoId: nuevoProducto.id, nombre: nuevoProducto.nombre, stock: nuevoProducto.stock }
+            });
+        }
         res.status(201).json({ ok: true, data: nuevoProducto });
     } catch (error) {
+        if (req.logger) {
+            req.logger.error('producto_error', { context: { message: error.message, stack: error.stack } });
+        }
         res.status(500).json({ ok: false, message: 'Error al crear producto' });
     }
 };
@@ -267,6 +282,11 @@ const editarProducto = async (req, res) => {
             // También notificamos el stock por si cambió
             io.emit('stock_actualizado', { productoId: producto.id, nuevoStock: producto.stock });
         }
+        if (req.logger) {
+            req.logger.info('producto_actualizado', {
+                context: { productoId: producto.id, nombre: producto.nombre }
+            });
+        }
 
         res.json({
             ok: true,
@@ -275,7 +295,9 @@ const editarProducto = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("ERROR AL EDITAR:", error); // Esto aparecerá en tu terminal de VS Code
+        if (req.logger) {
+            req.logger.error('producto_error', { context: { message: error.message, stack: error.stack } });
+        }
         res.status(500).json({ 
             ok: false, 
             message: 'Error al editar producto',
@@ -288,8 +310,14 @@ const eliminarProducto = async (req, res) => {
     try {
         const { id } = req.params;
         await Producto.destroy({ where: { id } });
+        if (req.logger) {
+            req.logger.info('producto_eliminado', { context: { productoId: Number(id) } });
+        }
         res.json({ ok: true, message: 'Producto eliminado' });
     } catch (error) {
+        if (req.logger) {
+            req.logger.error('producto_error', { context: { message: error.message, stack: error.stack } });
+        }
         res.status(500).json({ ok: false, message: 'Error al eliminar' });
     }
 };

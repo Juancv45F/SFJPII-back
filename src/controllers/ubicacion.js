@@ -42,12 +42,23 @@ const crearUbicacion = async (req, res = response) => {
             userId // Asignamos la ubicación a este usuario
         });
 
+        if (req.logger) {
+            req.logger.info('ubicacion_creada', {
+                context: {
+                    ubicacionId: nuevaUbicacion.id,
+                    alias: nuevaUbicacion.alias,
+                }
+            });
+        }
+
         res.json({
             ok: true,
             data: nuevaUbicacion
         });
     } catch (error) {
-        console.log(error);
+        if (req.logger) {
+            req.logger.error('ubicacion_error', { context: { message: error.message, stack: error.stack } });
+        }
         res.status(500).json({
             ok: false,
             msg: 'Error al guardar ubicación'

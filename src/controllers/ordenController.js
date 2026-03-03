@@ -101,6 +101,18 @@ const crearPedido = async (req, res) => {
             console.error('Error enviando socket de notificación:', socketError);
         }
 
+        // Evento de negocio: Pedido creado
+        if (req.logger) {
+            req.logger.info('pedido_creado', {
+                context: {
+                    pedidoId: nuevoPedido.id,
+                    total,
+                    productos: productos.map(p => ({ id: p.id, cantidad: p.cantidad })),
+                    ubicacionId,
+                }
+            });
+        }
+
         // 7. Respuesta Final
         res.status(201).json({ 
             ok: true, 
@@ -113,7 +125,9 @@ const crearPedido = async (req, res) => {
         if (!t.finished) {
             await t.rollback();
         }
-        console.error('Error al crear pedido:', error);
+        if (req.logger) {
+            req.logger.error('pedido_error', { context: { message: error.message, stack: error.stack } });
+        }
         res.status(500).json({ 
             ok: false, 
             message: error.message || 'Error interno al procesar el pedido' 
