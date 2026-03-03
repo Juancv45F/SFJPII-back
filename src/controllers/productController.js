@@ -1,43 +1,21 @@
-const { Producto, Categoria } = require('../models');
-const { Op } = require('sequelize');
+const Producto = require('../models-mongo/product');
+const cloudinary = require('../config/cloudinary');
 
-// Controlador unificado para Búsqueda Simple y Avanzada
 const buscarProductos = async (req, res) => {
     try {
-        // Obtener parámetros de la URL (Query Params)
         const { q, categoriaId, precioMin, precioMax } = req.query;
-
-        // Construir el objeto de filtros dinámicamente
-        let filtros = {};
-
-        // Búsqueda Simple (Texto)
-        if (q) {
-            filtros.nombre = {
-                [Op.iLike]: `%${q}%` // iLike es "Insensitive Like" (Ignora mayúsculas en Postgres)
-            };
-        }
-
-        // Filtros Avanzados
-        if (precioMin || precioMax) {
+        const filtros = {};
+        if (q) filtros.nombre = { $regex: q, $options: 'i' };
+        if (precioMin != null || precioMax != null) {
             filtros.precio = {};
-            if (precioMin) filtros.precio[Op.gte] = Number(precioMin); // Mayor o igual que
-            if (precioMax) filtros.precio[Op.lte] = Number(precioMax); // Menor o igual que
+            if (precioMin != null) filtros.precio.$gte = Number(precioMin);
+            if (precioMax != null) filtros.precio.$lte = Number(precioMax);
         }
-
         if (categoriaId) {
-            filtros.categoriaId = categoriaId;
+            filtros['categoria._id'] = categoriaId;
         }
+        const productos = await Producto.find(filtros).exec();
 
-        // Ejecutar la consulta en BD
-        const productos = await Producto.findAll({
-            where: filtros,
-            include: [{
-                model: Categoria,
-                attributes: ['nombre'] // Traer también el nombre de la categoría
-            }]
-        });
-
-        // Respuesta
         if (productos.length === 0) {
             return res.status(200).json({ 
                 message: 'No se encontraron productos con esos criterios',
@@ -52,23 +30,19 @@ const buscarProductos = async (req, res) => {
         });
 
     } catch (error) {
-        console.error(error);
         res.status(500).json({ message: 'Error en el servidor al buscar productos' });
     }
 };
 
 const obtenerTodos = async (req, res) => {
     try {
-        const productos = await Producto.findAll({
-            include: [{ model: Categoria, attributes: ['nombre'] }]
-        });
+        const productos = await Producto.find({}).exec();
         res.json({ data: productos });
     } catch (error) {
         res.status(500).json({ message: 'Error al obtener productos' });
     }
 };
 
-// Actualizar el Stock de un producto 
 const actualizarStock = async (req, res) => {
     try {
         const { id } = req.params;
@@ -78,28 +52,31 @@ const actualizarStock = async (req, res) => {
             return res.status(400).json({ message: 'El valor del stock es inválido.' });
         }
 
-        const producto = await Producto.findByPk(id);
+        const producto = await Producto.findById(id).exec();
         if (!producto) {
             return res.status(404).json({ message: 'Producto no encontrado.' });
         }
 
-        producto.stock = Number(stock);
-        await producto.save();
+        const actualizado = await Producto.findByIdAndUpdate(
+            id,
+            { stock: Number(stock) },
+            { new: true }
+        ).exec();
         
         const io = req.app.get('socketio');
         io.emit('stock_actualizado', {
-            productoId: producto.id,
-            nuevoStock: producto.stock
+            productoId: String(actualizado._id),
+            nuevoStock: actualizado.stock
         });
         if (req.logger) {
             req.logger.info('stock_actualizado_evento', {
-                context: { productoId: producto.id, nuevoStock: producto.stock }
+                context: { productoId: String(actualizado._id), nuevoStock: actualizado.stock }
             });
         }
         res.status(200).json({
             message: 'Stock actualizado correctamente.',
-            productoId: producto.id,
-            nuevoStock: producto.stock
+            productoId: String(actualizado._id),
+            nuevoStock: actualizado.stock
         });
     } catch (error) {
         if (req.logger) {
@@ -109,38 +86,48 @@ const actualizarStock = async (req, res) => {
     }
 };
 
-// Obtener solo el Stock de un producto
 const obtenerStock = async (req, res) => {
     try {
         const { id } = req.params;
 
-        const producto = await Producto.findByPk(id, {
-            attributes: ['id', 'stock', 'nombre'] // Solo traemos lo necesario
-        });
+        const producto = await Producto.findById(id).select('nombre stock').exec();
 
         if (!producto) {
             return res.status(404).json({ message: 'Producto no encontrado.' });
         }
 
         res.status(200).json({
-            id: producto.id,
+            id: String(producto._id),
             nombre: producto.nombre,
             stock: producto.stock
         });
 
     } catch (error) {
-        console.error(error);
         res.status(500).json({ message: 'Error al obtener el stock.' });
     }
 };
 
 const crearProducto = async (req, res) => {
     try {
-        const { nombre, descripcion, precio, descuento, stock, categoriaId } = req.body;
-        // Construimos la URL de la imagen
-        const imagenUrl = req.file ? `http://localhost:3000/uploads/${req.file.filename}` : undefined;
+        const { nombre, descripcion, precio, descuento, stock } = req.body;
+        let imagenUrl;
+        if (req.file) {
+            const b64 = req.file.buffer.toString('base64');
+            const dataURI = `data:${req.file.mimetype};base64,${b64}`;
+            const uploadRes = await cloudinary.uploader.upload(dataURI, {
+                folder: 'sfjpii/products',
+                resource_type: 'image',
+                use_filename: true,
+                unique_filename: true,
+                overwrite: false
+            });
+            imagenUrl = cloudinary.url(uploadRes.public_id, {
+                fetch_format: 'auto',
+                quality: 'auto',
+                secure: true
+            });
+        }
 
-         // Validar campos obligatorios
         if (!nombre || !precio || !stock) {
             return res.status(400).json({ 
                 ok: false, 
@@ -148,8 +135,7 @@ const crearProducto = async (req, res) => {
             });
         }
 
-        // Validar que el nombre sea único
-        const productoExistente = await Producto.findOne({ where: { nombre } });
+        const productoExistente = await Producto.findOne({ nombre }).exec();
         if (productoExistente) {
             return res.status(400).json({ 
                 ok: false, 
@@ -157,7 +143,6 @@ const crearProducto = async (req, res) => {
             });
         }
 
-        // Convertir a números y validar que no sean negativos
         const precioNum = parseFloat(precio);
         const stockNum = parseInt(stock, 10);
         const descuentoNum = descuento ? parseFloat(descuento) : 0;
@@ -181,19 +166,20 @@ const crearProducto = async (req, res) => {
             });
         }
 
+        const categoriaSnapshot = req.body.categoria || req.body.categoriaSnapshot || undefined;
         const nuevoProducto = await Producto.create({
             nombre,
             descripcion,
             precio: precioNum,
             descuento: descuentoNum,
             stock: stockNum,
-            categoriaId,
+            categoria: categoriaSnapshot,
             imagen: imagenUrl
         });
 
         if (req.logger) {
             req.logger.info('producto_creado', {
-                context: { productoId: nuevoProducto.id, nombre: nuevoProducto.nombre, stock: nuevoProducto.stock }
+                context: { productoId: String(nuevoProducto._id), nombre: nuevoProducto.nombre, stock: nuevoProducto.stock }
             });
         }
         res.status(201).json({ ok: true, data: nuevoProducto });
@@ -208,16 +194,14 @@ const crearProducto = async (req, res) => {
 const editarProducto = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, descripcion, precio, descuento, stock, categoriaId } = req.body;
+        const { nombre, descripcion, precio, descuento, stock } = req.body;
 
-        // 1. Buscar el producto existente
-        const producto = await Producto.findByPk(id);
+        const producto = await Producto.findById(id).exec();
 
         if (!producto) {
             return res.status(404).json({ ok: false, message: 'Producto no encontrado' });
         }
 
-         // Validar campos obligatorios
         if (!nombre || !precio || !stock) {
             return res.status(400).json({ 
                 ok: false, 
@@ -225,10 +209,9 @@ const editarProducto = async (req, res) => {
             });
         }
 
-        // Validar nombre único (excepto si es el mismo producto)
         if (nombre !== producto.nombre) {
-            const existente = await Producto.findOne({ where: { nombre } });
-            if (existente) {
+            const existente = await Producto.findOne({ nombre }).exec();
+            if (existente && String(existente._id) !== String(producto._id)) {
                 return res.status(400).json({ 
                     ok: false, 
                     message: 'Ya existe un producto con ese nombre' 
@@ -236,7 +219,6 @@ const editarProducto = async (req, res) => {
             }
         }
 
-        // Convertir a números y validar no negativos
         const precioNum = parseFloat(precio);
         const stockNum = parseInt(stock, 10);
         const descuentoNum = descuento ? parseFloat(descuento) : 0;
@@ -260,38 +242,50 @@ const editarProducto = async (req, res) => {
             });
         }
 
-        // 2. Si se subió una nueva imagen, actualizamos la ruta
-        // Si no se subió nada (req.file es undefined), conservamos la imagen anterior
-        const imagenUrl = req.file ? `http://localhost:3000/uploads/${req.file.filename}` : producto.imagen;
+        let imagenUrl = producto.imagen;
+        if (req.file) {
+            const b64 = req.file.buffer.toString('base64');
+            const dataURI = `data:${req.file.mimetype};base64,${b64}`;
+            const uploadRes = await cloudinary.uploader.upload(dataURI, {
+                folder: 'sfjpii/products',
+                resource_type: 'image',
+                use_filename: true,
+                unique_filename: true,
+                overwrite: false
+            });
+            imagenUrl = cloudinary.url(uploadRes.public_id, {
+                fetch_format: 'auto',
+                quality: 'auto',
+                secure: true
+            });
+        }
 
-        // 3. Actualizar campos
-        await producto.update({
+        const categoriaSnapshot = req.body.categoria || req.body.categoriaSnapshot || producto.categoria;
+        const actualizado = await Producto.findByIdAndUpdate(id, {
             nombre,
             descripcion,
             precio: precioNum,
             descuento: descuentoNum,
             stock: stockNum,
-            categoriaId,
+            categoria: categoriaSnapshot,
             imagen: imagenUrl
-        });
+        }, { new: true }).exec();
 
-        // 4. Emitir por Socket para que todos vean el cambio 
         const io = req.app.get('socketio');
         if (io) {
-            io.emit('producto_actualizado', producto);
-            // También notificamos el stock por si cambió
-            io.emit('stock_actualizado', { productoId: producto.id, nuevoStock: producto.stock });
+            io.emit('producto_actualizado', actualizado);
+            io.emit('stock_actualizado', { productoId: String(actualizado._id), nuevoStock: actualizado.stock });
         }
         if (req.logger) {
             req.logger.info('producto_actualizado', {
-                context: { productoId: producto.id, nombre: producto.nombre }
+                context: { productoId: String(actualizado._id), nombre: actualizado.nombre }
             });
         }
 
         res.json({
             ok: true,
             message: 'Producto actualizado con éxito',
-            data: producto
+            data: actualizado
         });
 
     } catch (error) {
@@ -309,9 +303,9 @@ const editarProducto = async (req, res) => {
 const eliminarProducto = async (req, res) => {
     try {
         const { id } = req.params;
-        await Producto.destroy({ where: { id } });
+        await Producto.findByIdAndDelete(id).exec();
         if (req.logger) {
-            req.logger.info('producto_eliminado', { context: { productoId: Number(id) } });
+            req.logger.info('producto_eliminado', { context: { productoId: String(id) } });
         }
         res.json({ ok: true, message: 'Producto eliminado' });
     } catch (error) {

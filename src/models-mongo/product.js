@@ -1,0 +1,20 @@
+const mongoose = require('mongoose');
+
+const CategoriaEmbeddedSchema = new mongoose.Schema({
+  _id: { type: mongoose.Schema.Types.ObjectId, required: true },
+  nombre: { type: String, required: true },
+  activa: { type: Boolean, default: true }
+}, { _id: false });
+
+const schema = new mongoose.Schema({
+  nombre: { type: String, required: true, index: true, unique: true },
+  descripcion: { type: String },
+  precio: { type: Number, required: true },
+  descuento: { type: Number, default: 0, min: 0, max: 100 },
+  stock: { type: Number, default: 0, min: 0 },
+  imagen: { type: String },
+  requiere_receta: { type: Boolean, default: false },
+  categoria: CategoriaEmbeddedSchema
+}, { timestamps: true });
+
+module.exports = mongoose.model('Producto', schema);

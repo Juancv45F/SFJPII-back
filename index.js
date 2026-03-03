@@ -3,7 +3,7 @@ const express = require ('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const { dbConnection } = require('./src/config/database');
+const { connect } = require('./src/config/mongoose');
 const productRoutes = require('./src/routes/productRoutes');
 const authRoutes = require('./src/routes/authRoutes');
 const pedidoRoutes = require('./src/routes/pedidosRoutes');
@@ -34,7 +34,20 @@ app.get('/', (req, res) => {
 })
 
 // Conexion a la base de datos
-dbConnection();
+connect()
+    .then(() => {
+        const logger = child({ component: 'mongoose' });
+        logger.info('mongo_connected');
+    })
+    .catch((e) => {
+        const logger = child({ component: 'mongoose' });
+        logger.error('mongo_connection_error', { context: { message: e.message, code: e.code, name: e.name, stack: e.stack } });
+        try { console.error('mongo_connection_error', e); } catch {}
+        const exitOnFail = String(process.env.MONGO_EXIT_ON_FAIL || 'true').toLowerCase() === 'true';
+        if (exitOnFail) {
+            process.exit(1);
+        }
+    });
 
 // Crear servidor HTTP
 const server = http.createServer(app);

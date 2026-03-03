@@ -13,12 +13,19 @@ router.post('/', [
 
     // B. Validaciones de datos 
     check('productos', 'La lista de productos es obligatoria').isArray({ min: 1 }),
-    check('productos.*.id', 'El ID del producto es obligatorio').isInt(),
+    // IDs ahora son ObjectId de Mongo
+    check('productos.*.id', 'El ID del producto debe ser un ObjectId válido').isMongoId(),
     check('productos.*.cantidad', 'La cantidad debe ser mayor a 0').isInt({ min: 1 }),
-    check('productos.*.precio', 'El precio debe ser un número').isNumeric(),
+    // el precio del cliente no es vinculante, el servidor recalcula
     
     check('total', 'El total es obligatorio y numérico').isNumeric(),
-    check('ubicacionId', 'La ubicación es obligatoria').not().isEmpty(),
+    check('ubicacionId', 'La ubicación es obligatoria')
+      .custom((v) => {
+        const mongoose = require('mongoose');
+        if (v === undefined || v === null) return false;
+        const n = Number(v);
+        return (Number.isInteger(n) && n >= 0) || mongoose.isValidObjectId(String(v));
+      }),
     // C. Revisar si hubo errores en los checks de arriba
     validarCampos 
 ], crearPedido);

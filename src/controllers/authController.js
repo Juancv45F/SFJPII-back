@@ -1,5 +1,5 @@
-const { sequelize } = require('../config/database');
-const { User, Ubicacion, Role } = require('../models');
+const mongoose = require('mongoose');
+const User = require('../models-mongo/user');
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
@@ -13,9 +13,7 @@ const isNonEmpty = (v) => typeof v === 'string' ? v.trim().length > 0 : v !== un
 const isLettersSpaces = (v) => /^[A-Za-zÀ-ÖØ-öø-ÿ\s]+$/.test(v);
 // REGISTRO COMPLETO (Usuario + Ubicación + Captcha)
 const register = async (req, res) => {
-    // Iniciamos una transacción (seguridad de datos)
-    const t = await sequelize.transaction();
-
+    const session = await mongoose.startSession();
     try {
         // Recibimos los datos estructurados desde el Frontend
         let { nombre, apellido, email, password, confirmPassword, ubicacion, recaptchaToken } = req.body;
@@ -31,27 +29,21 @@ const register = async (req, res) => {
             req.body?.confirm
         );
         if (!isNonEmpty(nombre) || !isNonEmpty(apellido) || !isNonEmpty(email) || !isNonEmpty(password) || !ubicacion) {
-            await t.rollback();
             return res.status(400).json({ message: 'Campos requeridos faltantes.' });
         }
         if (!isLettersSpaces(nombre) || !isLettersSpaces(apellido)) {
-            await t.rollback();
             return res.status(400).json({ message: 'Nombre y apellido inválidos.' });
         }
         if (!isEmail(email)) {
-            await t.rollback();
             return res.status(400).json({ message: 'Correo inválido.' });
         }
         if (!isStrongPassword(password)) {
-            await t.rollback();
             return res.status(400).json({ message: 'La contraseña no cumple los requisitos.' });
         }
         if (isNonEmpty(confirmPassword) && password !== confirmPassword) {
-            await t.rollback();
             return res.status(400).json({ message: 'Las contraseñas no coinciden.' });
         }
         if (!ubicacion.calle || !ubicacion.numero || !ubicacion.codigo_postal) {
-            await t.rollback();
             return res.status(400).json({ message: 'Ubicación incompleta.' });
         }
         ubicacion.calle = sanitize(ubicacion.calle);
@@ -60,13 +52,11 @@ const register = async (req, res) => {
         ubicacion.descripcion = sanitize(ubicacion.descripcion || '');
         ubicacion.alias = sanitize(ubicacion.alias || 'Principal');
         if (!isNonEmpty(ubicacion.calle) || !isNonEmpty(ubicacion.numero) || !isNonEmpty(ubicacion.codigo_postal)) {
-            await t.rollback();
             return res.status(400).json({ message: 'Ubicación inválida.' });
         }
 
         // --- VALIDACIÓN CAPTCHA ---
         if (!recaptchaToken) {
-            await t.rollback();
             return res.status(400).json({ message: 'Falta el captcha' });
         }
 
@@ -82,9 +72,8 @@ const register = async (req, res) => {
         // -----------------------------
 
         // --- VALIDAR DUPLICADOS ---
-        const existingUser = await User.findOne({ where: { email } });
+        const existingUser = await User.findOne({ email }).exec();
         if (existingUser) {
-            await t.rollback();
             return res.status(400).json({ message: 'Este correo ya está registrado.' });
         }
 
@@ -93,38 +82,28 @@ const register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
         const emailCode = Math.floor(100000 + Math.random() * 900000).toString();
 
-        // Buscar el ID del rol "cliente"
-        const roleCliente = await Role.findOne({ where: { nombre: 'cliente' } });
-        if (!roleCliente) {
-            await t.rollback();
-            return res.status(500).json({ message: 'Error interno: No existe el rol cliente.' });
-        }
+        let newUserDoc;
+        await session.withTransaction(async () => {
+            const newUser = await User.create([{
+                nombre,
+                apellido,
+                email,
+                password: hashedPassword,
+                verificationCode: emailCode,
+                isVerified: false,
+                role: 'cliente',
+                ubicaciones: [{
+                    calle: ubicacion.calle,
+                    numero: ubicacion.numero,
+                    codigo_postal: ubicacion.codigo_postal,
+                    descripcion: ubicacion.descripcion,
+                    alias: ubicacion.alias || 'Principal'
+                }]
+            }], { session });
+            newUserDoc = newUser[0];
+        });
 
-        // --- CREAR USUARIO (Dentro de la transacción) ---
-        const newUser = await User.create({
-            nombre,
-            apellido,
-            email,
-            password: hashedPassword,
-            verificationCode: emailCode,
-            isVerified: false,
-            roleId: roleCliente.id
-        }, { transaction: t });
-
-        // --- CREAR UBICACIÓN (Vinculada al nuevo ID) ---
-        // Asumimos que "ubicacion" viene del formulario de pasos
-        await Ubicacion.create({
-            calle: ubicacion.calle,
-            numero: ubicacion.numero,
-            codigo_postal: ubicacion.codigo_postal,
-            descripcion: ubicacion.descripcion,
-            alias: ubicacion.alias || 'Principal',
-            userId: newUser.id
-        }, { transaction: t });
-
-        // --- CONFIRMAR TRANSACCIÓN ---
-        await t.commit();
-        const regLogger = child({ userId: newUser.id });
+        const regLogger = child({ userId: String(newUserDoc._id) });
         regLogger.info('usuario_registrado');
 
         // Envío de correo
@@ -164,15 +143,15 @@ const register = async (req, res) => {
             message: sentByEmail
                 ? 'Registro exitoso. Revisa tu correo para el código.'
                 : 'Registro exitoso. Código de verificación simulado en servidor.',
-            userId: newUser.id
+            userId: String(newUserDoc._id)
         });
 
     } catch (error) {
-        // Si algo falla, deshacemos todo (no se crea usuario ni ubicación)
-        await t.rollback();
         const logger = child();
         logger.error('registro_error', { context: { message: error.message, stack: error.stack } });
         res.status(500).json({ message: 'Error en el servidor al registrar.' });
+    } finally {
+        session.endSession();
     }
 };
 
@@ -186,7 +165,7 @@ const verifyCode = async (req, res) => {
             return res.status(400).json({ message: 'Datos inválidos.' });
         }
 
-        const user = await User.findOne({ where: { email } });
+        const user = await User.findOne({ email }).exec();
 
         if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
 
@@ -195,9 +174,10 @@ const verifyCode = async (req, res) => {
         }
 
         // Activar usuario
-        user.isVerified = true;
-        user.verificationCode = null; // Limpiar código para seguridad
-        await user.save();
+        await User.updateOne(
+            { _id: user._id },
+            { $set: { isVerified: true, verificationCode: null } }
+        ).exec();
 
         res.status(200).json({
             message: '¡Verificación exitosa! Ya puedes iniciar sesión.',
@@ -205,7 +185,6 @@ const verifyCode = async (req, res) => {
         });
 
     } catch (error) {
-        console.error(error);
         res.status(500).json({ message: 'Error al verificar.' });
     }
 };
@@ -220,11 +199,7 @@ const login = async (req, res) => {
             return res.status(400).json({ message: 'Datos inválidos.' });
         }
 
-        // Buscar usuario e incluir su Rol
-        const user = await User.findOne({ 
-            where: { email },
-            include: [{ model: Role }] 
-        });
+        const user = await User.findOne({ email }).exec();
 
         if (!user) return res.status(400).json({ message: 'Credenciales inválidas' });
 
@@ -240,9 +215,9 @@ const login = async (req, res) => {
         // --- GENERACIÓN DEL JWT ---
         // Payload: Datos que van encriptados dentro del token
         const payload = {
-            uid: user.id,
+            uid: String(user._id),
             nombre: user.nombre,
-            rol: user.Role ? user.Role.nombre : 'cliente' // Por seguridad
+            rol: user.role || 'cliente'
         };
 
         // Firmar el token (Expira en 4 horas)
@@ -257,12 +232,12 @@ const login = async (req, res) => {
             message: 'Bienvenido',
             token, // <--- Aquí enviamos el "pase" al Frontend
             user: {
-                id: user.id,
+                id: String(user._id),
                 nombre: user.nombre,
-                rol: user.Role ? user.Role.nombre : 'cliente'
+                rol: user.role || 'cliente'
             }
         });
-        const loginLogger = child({ userId: user.id });
+        const loginLogger = child({ userId: String(user._id) });
         loginLogger.info('login_exitoso');
 
     } catch (error) {

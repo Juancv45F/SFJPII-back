@@ -1,179 +1,68 @@
 const bcrypt = require('bcryptjs');
-const { sequelize } = require('../config/database');
-const { Role, User, Ubicacion, Categoria, Producto, Pedido, DetallePedido } = require('../models');
+const mongoose = require('mongoose');
+const { connect } = require('../config/mongoose');
+const User = require('../models-mongo/user');
+const Producto = require('../models-mongo/product');
+const Pedido = require('../models-mongo/pedido');
 
-const seedDatabase = async () => {
-    try {
-        // force: true BORRA toda la base de datos y la crea de nuevo.
-        await sequelize.sync({ force: true });
-        console.log('>>>  Base de datos limpiada y tablas recreadas.');
+async function seedDatabase() {
+  await connect();
+  await Promise.all([Pedido.deleteMany({}), Producto.deleteMany({}), User.deleteMany({})]);
+  const salt = await bcrypt.genSalt(10);
+  const passAdmin = await bcrypt.hash('Admin123', salt);
+  const passCliente = await bcrypt.hash('Cliente123', salt);
+  const admin = await User.create({
+    nombre: 'Juan Pablo',
+    apellido: 'Admin',
+    email: 'admin@sfjpii.local',
+    password: passAdmin,
+    role: 'admin',
+    isVerified: true,
+    ubicaciones: []
+  });
+  const cliente = await User.create({
+    nombre: 'Maria',
+    apellido: 'Lopez',
+    email: 'cliente@sfjpii.local',
+    password: passCliente,
+    role: 'cliente',
+    isVerified: true,
+    ubicaciones: [
+      { calle: 'Calle Morelos', numero: '123', codigo_postal: '47250', descripcion: 'Casa color verde frente al parque, Villa Hidalgo.', alias: 'Casa' },
+      { calle: 'Av. Industria Textil', numero: '500-B', codigo_postal: '47250', descripcion: 'Local 4, Plaza Textil.', alias: 'Trabajo' }
+    ]
+  });
+  const catFarmacia = { _id: new mongoose.Types.ObjectId(), nombre: 'Farmacia', activa: true };
+  const catBebes = { _id: new mongoose.Types.ObjectId(), nombre: 'Bebés', activa: true };
+  const catHigiene = { _id: new mongoose.Types.ObjectId(), nombre: 'Higiene y Belleza', activa: true };
+  const productos = await Producto.create([
+    { nombre: 'Paracetamol 500mg', descripcion: 'Analgésico para fiebre y dolor leve. Caja 10 tabs.', precio: 25.0, descuento: 0, stock: 100, imagen: 'https://www.tempra.com.mx/static/754245cbb05fab5a0992a38575208e59/ec333/tempra-500mg-20t_i.png', requiere_receta: false, categoria: catFarmacia },
+    { nombre: 'Amoxicilina 500mg', descripcion: 'Antibiótico de amplio espectro. Requiere receta.', precio: 85.5, descuento: 0, stock: 50, imagen: 'https://cdn-icons-png.flaticon.com/512/883/883356.png', requiere_receta: true, categoria: catFarmacia },
+    { nombre: 'Pañales BioBaby Etapa 3', descripcion: 'Pañales ecológicos, paquete de 40 piezas.', precio: 250.0, descuento: 10, stock: 30, imagen: 'https://cdn-icons-png.flaticon.com/512/2257/2257662.png', requiere_receta: false, categoria: catBebes },
+    { nombre: 'Shampoo Tío Nacho', descripcion: 'Jalea Real aclarante. Botella 415ml.', precio: 95.0, descuento: 15, stock: 20, imagen: 'https://cdn-icons-png.flaticon.com/512/2553/2553644.png', requiere_receta: false, categoria: catHigiene },
+    { nombre: 'Electrolit Uva', descripcion: 'Suero rehidratante oral 625ml.', precio: 28.0, descuento: 0, stock: 200, imagen: 'https://cdn-icons-png.flaticon.com/512/3050/3050257.png', requiere_receta: false, categoria: catFarmacia }
+  ]);
+  const ubic = cliente.ubicaciones[0];
+  const items = [
+    { productoId: productos[3]._id, nombre: productos[3].nombre, imagen: productos[3].imagen, precio_unitario: productos[3].precio, cantidad: 1, subtotal: productos[3].precio },
+    { productoId: productos[2]._id, nombre: productos[2].nombre, imagen: productos[2].imagen, precio_unitario: productos[2].precio, cantidad: 1, subtotal: productos[2].precio }
+  ];
+  const total = items.reduce((s, i) => s + i.subtotal, 0);
+  await Pedido.create({
+    fecha: new Date(new Date().setDate(new Date().getDate() - 2)),
+    total,
+    estado: 'entregado',
+    metodo_pago: 'efectivo',
+    userId: cliente._id,
+    ubicacion: { calle: ubic.calle, numero: ubic.numero, codigo_postal: ubic.codigo_postal, descripcion: ubic.descripcion, alias: ubic.alias },
+    items
+  });
+  console.log('Seed completado');
+  await mongoose.disconnect();
+}
 
-        // ----------------------------------------------------------------------
-        // 1. CREAR ROLES
-        // ----------------------------------------------------------------------
-        const rolAdmin = await Role.create({ nombre: 'admin', descripcion: 'Control total del sistema' });
-        const rolCliente = await Role.create({ nombre: 'cliente', descripcion: 'Comprador' });
-        const rolRepartidor = await Role.create({ nombre: 'repartidor', descripcion: 'Encargado de entregas' });
-        console.log('Roles creados.');
-
-        // ----------------------------------------------------------------------
-        // 2. CREAR USUARIOS
-        // ----------------------------------------------------------------------
-        const salt = await bcrypt.genSalt(10);
-        
-        // --- Usuario Administrador ---
-        const passAdmin = await bcrypt.hash('Admin123', salt);
-        const admin = await User.create({
-            nombre: 'Juan Pablo',
-            apellido: 'Admin',
-            email: 'admin@sfjpii.local',
-            password: passAdmin,
-            rolId: rolAdmin.id,
-            isVerified: true
-        });
-
-        // --- Usuario Cliente ---
-        const passCliente = await bcrypt.hash('Cliente123', salt);
-        const cliente = await User.create({
-            nombre: 'Maria',
-            apellido: 'Lopez',
-            email: 'cliente@sfjpii.local',
-            password: passCliente,
-            rolId: rolCliente.id,
-            isVerified: true
-        });
-        console.log('Usuarios creados (Admin y Cliente).');
-
-        // ----------------------------------------------------------------------
-        // 3. CREAR UBICACIONES (Contexto Villa Hidalgo)
-        // ----------------------------------------------------------------------
-        const ubicacionCasa = await Ubicacion.create({
-            calle: 'Calle Morelos',
-            numero: '123',
-            codigo_postal: '47250',
-            descripcion: 'Casa color verde frente al parque, Villa Hidalgo.',
-            alias: 'Casa',
-            userId: cliente.id
-        });
-        
-        const ubicacionTrabajo = await Ubicacion.create({
-            calle: 'Av. Industria Textil',
-            numero: '500-B',
-            codigo_postal: '47250',
-            descripcion: 'Local 4, Plaza Textil.',
-            alias: 'Trabajo',
-            userId: cliente.id
-        });
-        console.log('Ubicaciones creadas.');
-
-        // ----------------------------------------------------------------------
-        // 4. CREAR CATEGORÍAS
-        // ----------------------------------------------------------------------
-        const catFarmacia = await Categoria.create({ nombre: 'Farmacia', activa: true });
-        const catBebes = await Categoria.create({ nombre: 'Bebés', activa: true });
-        const catHigiene = await Categoria.create({ nombre: 'Higiene y Belleza', activa: true });
-        const catOfertas = await Categoria.create({ nombre: 'Ofertas Temporada', activa: true });
-        console.log('Categorías creadas.');
-
-        // ----------------------------------------------------------------------
-        // 5. CREAR PRODUCTOS (Con Descuentos)
-        // ----------------------------------------------------------------------
-        const productos = await Producto.bulkCreate([
-            {
-                nombre: 'Paracetamol 500mg',
-                descripcion: 'Analgésico para alivio de fiebre y dolor leve. Caja 10 tabs.',
-                precio: 25.00,
-                descuento: 0,
-                stock: 100,
-                imagen: 'https://www.tempra.com.mx/static/754245cbb05fab5a0992a38575208e59/ec333/tempra-500mg-20t_i.png',
-                requiere_receta: false,
-                categoriaId: catFarmacia.id
-            },
-            {
-                nombre: 'Amoxicilina 500mg',
-                descripcion: 'Antibiótico de amplio espectro. Requiere receta.',
-                precio: 85.50,
-                descuento: 0,
-                stock: 50,
-                imagen: 'https://cdn-icons-png.flaticon.com/512/883/883356.png',
-                requiere_receta: true,
-                categoriaId: catFarmacia.id
-            },
-            {
-                nombre: 'Pañales BioBaby Etapa 3',
-                descripcion: 'Pañales ecológicos, paquete de 40 piezas.',
-                precio: 250.00,
-                descuento: 10, // 10% de descuento
-                stock: 30,
-                imagen: 'https://cdn-icons-png.flaticon.com/512/2257/2257662.png',
-                requiere_receta: false,
-                categoriaId: catBebes.id
-            },
-            {
-                nombre: 'Shampoo Tío Nacho',
-                descripcion: 'Jalea Real aclarante. Botella 415ml.',
-                precio: 95.00,
-                descuento: 15, // 15% de descuento
-                stock: 20,
-                imagen: 'https://cdn-icons-png.flaticon.com/512/2553/2553644.png',
-                requiere_receta: false,
-                categoriaId: catHigiene.id
-            },
-            {
-                nombre: 'Electrolit Uva',
-                descripcion: 'Suero rehidratante oral 625ml.',
-                precio: 28.00,
-                descuento: 0,
-                stock: 200,
-                imagen: 'https://cdn-icons-png.flaticon.com/512/3050/3050257.png',
-                requiere_receta: false,
-                categoriaId: catFarmacia.id
-            }
-        ]);
-        console.log('Productos creados.');
-
-        // ----------------------------------------------------------------------
-        // 6. CREAR UN PEDIDO DE PRUEBA (Historial)
-        // ----------------------------------------------------------------------
-        // Supongamos que María compró hace 2 días
-        const pedidoPrueba = await Pedido.create({
-            fecha: new Date(new Date().setDate(new Date().getDate() - 2)), // Hace 2 días
-            total: 345.00,
-            estado: 'entregado',
-            metodo_pago: 'efectivo',
-            userId: cliente.id,
-            ubicacionId: ubicacionCasa.id
-        });
-
-        // Detalles del pedido (Compró 1 Shampoo y 1 Paquete de Pañales)
-        await DetallePedido.bulkCreate([
-            {
-                cantidad: 1,
-                precio_unitario: 95.00, // Precio histórico
-                subtotal: 95.00,
-                pedidoId: pedidoPrueba.id,
-                productoId: 4 // Shampoo
-            },
-            {
-                cantidad: 1,
-                precio_unitario: 250.00,
-                subtotal: 250.00,
-                pedidoId: pedidoPrueba.id,
-                productoId: 3 // Pañales
-            }
-        ]);
-
-        console.log('Pedido de prueba creado (Historial).');
-
-        console.log('==============================================');
-        console.log('🚀  BASE DE DATOS LISTA PARA USARSE');
-        console.log('    Admin Email: admin@sfjpii.local | Pass: Admin123');
-        console.log('    Cliente Email: cliente@sfjpii.local | Pass: Cliente123');
-        console.log('==============================================');
-
-    } catch (error) {
-        console.error('❌ Error fatal al sembrar la BD:', error);
-    }
-};
-
-seedDatabase();
+seedDatabase().catch(async (e) => {
+  console.error(e);
+  try { await mongoose.disconnect(); } catch {}
+  process.exit(1);
+});

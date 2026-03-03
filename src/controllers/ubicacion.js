@@ -1,17 +1,13 @@
 const { response } = require('express');
-const { Ubicacion } = require('../models'); // Asegúrate de importar tu modelo
+const User = require('../models-mongo/user');
 
 const obtenerUbicaciones = async (req, res = response) => {
 
-    // Se asume que tu middleware 'validateToken' guarda el ID del usuario en req.uid
     const userId = req.uid; 
 
     try {
-        const ubicaciones = await Ubicacion.findAll({
-            where: {
-                userId: userId // <-- FILTRO CLAVE: Solo las de este usuario
-            }
-        });
+        const user = await User.findById(userId).select('ubicaciones').exec();
+        const ubicaciones = user ? user.ubicaciones : [];
 
         res.json({
             ok: true,
@@ -19,7 +15,6 @@ const obtenerUbicaciones = async (req, res = response) => {
         });
 
     } catch (error) {
-        console.log(error);
         res.status(500).json({
             ok: false,
             msg: 'Hable con el administrador'
@@ -27,25 +22,30 @@ const obtenerUbicaciones = async (req, res = response) => {
     }
 }
 
-// Opcional: Crear una nueva ubicación desde el Checkout
 const crearUbicacion = async (req, res = response) => {
     const userId = req.uid;
     const { calle, numero, codigo_postal, alias, descripcion } = req.body;
 
     try {
-        const nuevaUbicacion = await Ubicacion.create({
+        const user = await User.findById(userId).exec();
+        if (!user) {
+            return res.status(404).json({ ok: false, msg: 'Usuario no encontrado' });
+        }
+        user.ubicaciones = user.ubicaciones || [];
+        user.ubicaciones.push({
             calle,
             numero,
             codigo_postal,
             alias,
-            descripcion,
-            userId // Asignamos la ubicación a este usuario
+            descripcion
         });
+        await user.save();
+        const nuevaUbicacion = user.ubicaciones[user.ubicaciones.length - 1];
 
         if (req.logger) {
             req.logger.info('ubicacion_creada', {
                 context: {
-                    ubicacionId: nuevaUbicacion.id,
+                    alias: nuevaUbicacion.alias,
                     alias: nuevaUbicacion.alias,
                 }
             });
