@@ -8,6 +8,7 @@ const productRoutes = require('./src/routes/productRoutes');
 const authRoutes = require('./src/routes/authRoutes');
 const pedidoRoutes = require('./src/routes/pedidosRoutes');
 const ubicacionesRoutes = require('./src/routes/ubicacionesRoutes')
+const carritoRoutes = require('./src/routes/carritoRoutes')
 const path = require('path');
 const { requestLogger, errorHandler } = require('./src/middlewares/logging');
 const { child } = require('./src/utils/logger');
@@ -88,6 +89,7 @@ app.use('/api/productos', productRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/pedidos',pedidoRoutes);
 app.use('/api/ubicaciones',ubicacionesRoutes);
+app.use('/api/carrito', carritoRoutes);
 
 // Ruta de diagnóstico para simular latencia
 app.get('/api/debug/delay', async (req, res) => {
