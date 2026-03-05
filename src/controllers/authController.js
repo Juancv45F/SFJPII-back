@@ -64,12 +64,12 @@ const register = async (req, res) => {
         const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`;
         
         // Descomentar para producción:
-        // const googleResponse = await axios.post(verifyUrl);
-        // if (!googleResponse.data.success) {
-        //     await t.rollback();
-        //     return res.status(400).json({ message: 'Captcha inválido' });
-        // }
-        // -----------------------------
+        const googleResponse = await axios.post(verifyUrl);
+        if (!googleResponse.data.success) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Captcha inválido' });
+        }
+        
 
         // --- VALIDAR DUPLICADOS ---
         const existingUser = await User.findOne({ email }).exec();
