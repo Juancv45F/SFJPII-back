@@ -110,25 +110,46 @@ const register = async (req, res) => {
         let sentByEmail = false;
         try {
             if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+                const port = Number(process.env.SMTP_PORT) || 587;
+                const secure = typeof process.env.SMTP_SECURE === 'string'
+                    ? process.env.SMTP_SECURE === 'true'
+                    : port === 465;
+                const requireTLS = process.env.SMTP_REQUIRE_TLS === 'true';
+                const rejectUnauthorized = process.env.SMTP_REJECT_UNAUTHORIZED === 'false' ? false : undefined;
                 const transporter = nodemailer.createTransport({
                     host: process.env.SMTP_HOST,
-                    port: Number(process.env.SMTP_PORT) || 587,
-                    secure: false,
+                    port,
+                    secure,
                     auth: {
                         user: process.env.SMTP_USER,
                         pass: process.env.SMTP_PASS
-                    }
+                    },
+                    requireTLS,
+                    tls: rejectUnauthorized === undefined ? undefined : { rejectUnauthorized }
                 });
+                try {
+                    await transporter.verify();
+                } catch (verifyError) {
+                    regLogger.error('email_transport_verify_failed', { context: { message: verifyError.message, code: verifyError.code } });
+                    throw verifyError;
+                }
 
-                await transporter.sendMail({
-                    from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+                const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER;
+                const fromName = process.env.SMTP_FROM_NAME;
+                const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+                const info = await transporter.sendMail({
+                    from,
                     to: email,
                     subject: 'Código de verificación',
                     text: `Tu código de verificación es: ${emailCode}`
                 });
+                regLogger.info('email_send_success', { context: { to: email, messageId: info && info.messageId ? info.messageId : null } });
                 sentByEmail = true;
+            } else {
+                regLogger.warn('email_not_configured');
             }
         } catch (mailError) {
+            regLogger.error('email_send_failed', { context: { message: mailError.message, code: mailError.code, response: mailError.response, command: mailError.command } });
             sentByEmail = false;
         }
 
