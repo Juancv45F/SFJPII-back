@@ -106,10 +106,10 @@ function log(level, fields = {}) {
 
 function child(base = {}) {
   return {
-    debug: (message, extra = {}) => log('debug', { message, ...base, context: redact(extra.context || {}), ...extra, context: undefined }),
-    info: (message, extra = {}) => log('info', { message, ...base, context: redact(extra.context || {}), ...extra, context: undefined }),
-    warn: (message, extra = {}) => log('warn', { message, ...base, context: redact(extra.context || {}), ...extra, context: undefined }),
-    error: (message, extra = {}) => log('error', { message, ...base, context: redact(extra.context || {}), ...extra, context: undefined }),
+    debug: (message, extra = {}) => log('debug', { message, ...base, ...extra, context: redact(extra.context || {}) }),
+    info: (message, extra = {}) => log('info', { message, ...base, ...extra, context: redact(extra.context || {}) }),
+    warn: (message, extra = {}) => log('warn', { message, ...base, ...extra, context: redact(extra.context || {}) }),
+    error: (message, extra = {}) => log('error', { message, ...base, ...extra, context: redact(extra.context || {}) }),
   };
 }
 

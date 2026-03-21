@@ -23,8 +23,32 @@ const schema = new mongoose.Schema({
   password: { type: String, required: true },
   foto_perfil: { type: String },
   verificationCode: { type: String },
+  verificationCodeSentAt: { type: Date },
   isVerified: { type: Boolean, default: false },
   role: { type: String, default: 'cliente' },
+  mfa: {
+    enabled: { type: Boolean, default: false },
+    channel: { type: String, default: 'email' },
+    otpHash: { type: String },
+    otpExpiresAt: { type: Date },
+    otpAttempts: { type: Number, default: 0 },
+    otpSentAt: { type: Date }
+  },
+  preferences: {
+    theme: { type: String, default: 'light' },
+    language: { type: String, default: 'es' }
+  },
+  refreshTokens: [{
+    sessionId: { type: String },
+    tokenHash: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now },
+    lastUsedAt: { type: Date, default: Date.now },
+    expiresAt: { type: Date, required: true },
+    revokedAt: { type: Date },
+    replacedByTokenHash: { type: String },
+    userAgent: { type: String },
+    ip: { type: String }
+  }],
   ubicaciones: [UbicacionSchema],
   carrito: {
     items: [CarritoItemSchema]
