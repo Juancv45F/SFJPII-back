@@ -50,33 +50,111 @@ function createMfaToken(user) {
     return jwt.sign(payload, secret, { expiresIn });
 }
 
+let smtpTransporterPromise = null;
+let smtpTransporterConfigKey = null;
+
+function isEmailSimulationEnabled() {
+    if (process.env.EMAIL_SIMULATION_ENABLED === 'true') return true;
+    return process.env.NODE_ENV !== 'production';
+}
+
+function getSmtpConfig() {
+    const host = process.env.SMTP_HOST;
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASS;
+    if (!host || !user || !pass) return null;
+
+    const port = Number(process.env.SMTP_PORT) || 587;
+    const secure = typeof process.env.SMTP_SECURE === 'string'
+        ? process.env.SMTP_SECURE === 'true'
+        : port === 465;
+    const requireTLS = process.env.SMTP_REQUIRE_TLS === 'true';
+    const rejectUnauthorized = process.env.SMTP_REJECT_UNAUTHORIZED === 'false' ? false : undefined;
+
+    const connectionTimeout = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 10_000;
+    const greetingTimeout = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 10_000;
+    const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 20_000;
+
+    const fromEmail = process.env.FROM_EMAIL || user;
+    const fromName = process.env.SMTP_FROM_NAME;
+    const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+
+    return {
+        host,
+        port,
+        secure,
+        requireTLS,
+        rejectUnauthorized,
+        user,
+        pass,
+        connectionTimeout,
+        greetingTimeout,
+        socketTimeout,
+        from
+    };
+}
+
+function getSmtpConfigKey(cfg) {
+    return JSON.stringify({
+        host: cfg.host,
+        port: cfg.port,
+        secure: cfg.secure,
+        requireTLS: cfg.requireTLS,
+        rejectUnauthorized: cfg.rejectUnauthorized,
+        user: cfg.user,
+        connectionTimeout: cfg.connectionTimeout,
+        greetingTimeout: cfg.greetingTimeout,
+        socketTimeout: cfg.socketTimeout
+    });
+}
+
+async function getSmtpTransporter(logger) {
+    const cfg = getSmtpConfig();
+    if (!cfg) return null;
+
+    const nextKey = getSmtpConfigKey(cfg);
+    if (smtpTransporterConfigKey !== nextKey) {
+        smtpTransporterConfigKey = nextKey;
+        smtpTransporterPromise = null;
+    }
+
+    if (!smtpTransporterPromise) {
+        smtpTransporterPromise = (async () => {
+            const transporter = nodemailer.createTransport({
+                host: cfg.host,
+                port: cfg.port,
+                secure: cfg.secure,
+                auth: {
+                    user: cfg.user,
+                    pass: cfg.pass
+                },
+                requireTLS: cfg.requireTLS,
+                tls: cfg.rejectUnauthorized === undefined ? undefined : { rejectUnauthorized: cfg.rejectUnauthorized },
+                connectionTimeout: cfg.connectionTimeout,
+                greetingTimeout: cfg.greetingTimeout,
+                socketTimeout: cfg.socketTimeout
+            });
+            await transporter.verify();
+            logger?.info?.('smtp_verify_ok', { context: { host: cfg.host, port: cfg.port, secure: cfg.secure } });
+            return transporter;
+        })().catch((err) => {
+            smtpTransporterPromise = null;
+            logger?.error?.('smtp_init_failed', { context: { message: err.message, code: err.code, response: err.response, command: err.command } });
+            throw err;
+        });
+    }
+
+    return smtpTransporterPromise;
+}
+
 async function sendOtpEmail({ to, code, logger }) {
     let sentByEmail = false;
     try {
-        if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-            const port = Number(process.env.SMTP_PORT) || 587;
-            const secure = typeof process.env.SMTP_SECURE === 'string'
-                ? process.env.SMTP_SECURE === 'true'
-                : port === 465;
-            const requireTLS = process.env.SMTP_REQUIRE_TLS === 'true';
-            const rejectUnauthorized = process.env.SMTP_REJECT_UNAUTHORIZED === 'false' ? false : undefined;
-            const transporter = nodemailer.createTransport({
-                host: process.env.SMTP_HOST,
-                port,
-                secure,
-                auth: {
-                    user: process.env.SMTP_USER,
-                    pass: process.env.SMTP_PASS
-                },
-                requireTLS,
-                tls: rejectUnauthorized === undefined ? undefined : { rejectUnauthorized }
-            });
-            await transporter.verify();
-            const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER;
-            const fromName = process.env.SMTP_FROM_NAME;
-            const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+        const smtpCfg = getSmtpConfig();
+        const transporter = await getSmtpTransporter(logger);
+        if (transporter && smtpCfg) {
             const info = await transporter.sendMail({
-                from,
+                from: smtpCfg.from,
                 to,
                 subject: 'Código de acceso (MFA)',
                 text: `Tu código OTP es: ${code}. Expira pronto.`
@@ -91,40 +169,24 @@ async function sendOtpEmail({ to, code, logger }) {
         sentByEmail = false;
     }
     if (!sentByEmail) {
-        console.log('=============================================');
-        console.log(`📲  [OTP SIMULADO] Mensaje para ${to}:`);
-        console.log(`🔐  Tu código OTP es: ${code}`);
-        console.log('=============================================');
+        if (isEmailSimulationEnabled()) {
+            console.log('=============================================');
+            console.log(`📲  [OTP SIMULADO] Mensaje para ${to}:`);
+            console.log(`🔐  Tu código OTP es: ${code}`);
+            console.log('=============================================');
+        }
     }
+    return sentByEmail;
 }
 
 async function sendVerificationEmail({ to, code, logger }) {
     let sentByEmail = false;
     try {
-        if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-            const port = Number(process.env.SMTP_PORT) || 587;
-            const secure = typeof process.env.SMTP_SECURE === 'string'
-                ? process.env.SMTP_SECURE === 'true'
-                : port === 465;
-            const requireTLS = process.env.SMTP_REQUIRE_TLS === 'true';
-            const rejectUnauthorized = process.env.SMTP_REJECT_UNAUTHORIZED === 'false' ? false : undefined;
-            const transporter = nodemailer.createTransport({
-                host: process.env.SMTP_HOST,
-                port,
-                secure,
-                auth: {
-                    user: process.env.SMTP_USER,
-                    pass: process.env.SMTP_PASS
-                },
-                requireTLS,
-                tls: rejectUnauthorized === undefined ? undefined : { rejectUnauthorized }
-            });
-            await transporter.verify();
-            const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER;
-            const fromName = process.env.SMTP_FROM_NAME;
-            const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+        const smtpCfg = getSmtpConfig();
+        const transporter = await getSmtpTransporter(logger);
+        if (transporter && smtpCfg) {
             const info = await transporter.sendMail({
-                from,
+                from: smtpCfg.from,
                 to,
                 subject: 'Código de verificación',
                 text: `Tu código de verificación es: ${code}`
@@ -139,11 +201,14 @@ async function sendVerificationEmail({ to, code, logger }) {
         sentByEmail = false;
     }
     if (!sentByEmail) {
-        console.log('=============================================');
-        console.log(`✉️  [EMAIL SIMULADO] Mensaje para ${to}:`);
-        console.log(`🔐  Tu código de verificación es: ${code}`);
-        console.log('=============================================');
+        if (isEmailSimulationEnabled()) {
+            console.log('=============================================');
+            console.log(`✉️  [EMAIL SIMULADO] Mensaje para ${to}:`);
+            console.log(`🔐  Tu código de verificación es: ${code}`);
+            console.log('=============================================');
+        }
     }
+    return sentByEmail;
 }
 
 async function persistRefreshToken({ user, refreshToken, req }) {
@@ -267,7 +332,16 @@ const register = async (req, res) => {
         regLogger.info('usuario_registrado');
 
         // Envío de correo
-        await sendVerificationEmail({ to: email, code: emailCode, logger: regLogger });
+        const sent = await sendVerificationEmail({ to: email, code: emailCode, logger: regLogger });
+        const requireEmail = process.env.EMAIL_REQUIRED_ON_REGISTER === 'true' || process.env.NODE_ENV === 'production';
+        if (!sent && requireEmail && !isEmailSimulationEnabled()) {
+            try {
+                await User.deleteOne({ _id: newUserDoc._id }).exec();
+            } catch (cleanupErr) {
+                regLogger.error('register_cleanup_failed', { context: { message: cleanupErr.message } });
+            }
+            return res.status(503).json({ message: 'No se pudo enviar el correo de verificación. Intenta de nuevo más tarde.' });
+        }
 
         res.status(201).json({
             message: 'Registro exitoso. Revisa tu correo para el código.',
@@ -340,7 +414,10 @@ const resendVerifyCode = async (req, res) => {
         await user.save();
 
         const logger = child({ userId: String(user._id) });
-        await sendVerificationEmail({ to: user.email, code, logger });
+        const sent = await sendVerificationEmail({ to: user.email, code, logger });
+        if (!sent && process.env.NODE_ENV === 'production' && !isEmailSimulationEnabled()) {
+            return res.status(503).json({ message: 'No se pudo enviar el correo. Intenta más tarde.' });
+        }
         return res.json({ message: 'Código reenviado', retryAfterSec: Math.ceil(resendCooldownMs / 1000) });
     } catch (error) {
         const logger = child();
@@ -386,7 +463,10 @@ const login = async (req, res) => {
             await user.save();
 
             const loginLogger = child({ userId: String(user._id) });
-            await sendOtpEmail({ to: user.email, code: otp, logger: loginLogger });
+            const sent = await sendOtpEmail({ to: user.email, code: otp, logger: loginLogger });
+            if (!sent && process.env.NODE_ENV === 'production' && !isEmailSimulationEnabled()) {
+                return res.status(503).json({ message: 'No se pudo enviar el código OTP. Intenta más tarde.' });
+            }
 
             const mfaToken = createMfaToken(user);
             return res.json({
@@ -464,7 +544,10 @@ const resendMfaOtp = async (req, res) => {
         await user.save();
 
         const logger = child({ userId: String(user._id) });
-        await sendOtpEmail({ to: user.email, code: otp, logger });
+        const sent = await sendOtpEmail({ to: user.email, code: otp, logger });
+        if (!sent && process.env.NODE_ENV === 'production' && !isEmailSimulationEnabled()) {
+            return res.status(503).json({ message: 'No se pudo enviar el código OTP. Intenta más tarde.' });
+        }
         return res.json({ message: 'OTP reenviado', retryAfterSec: Math.ceil(resendCooldownMs / 1000) });
     } catch (error) {
         const logger = child();
