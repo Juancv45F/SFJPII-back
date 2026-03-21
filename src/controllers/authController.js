@@ -139,7 +139,21 @@ async function getSmtpTransporter(logger) {
             return transporter;
         })().catch((err) => {
             smtpTransporterPromise = null;
-            logger?.error?.('smtp_init_failed', { context: { message: err.message, code: err.code, response: err.response, command: err.command } });
+            logger?.error?.('smtp_init_failed', {
+                context: {
+                    message: err.message,
+                    code: err.code,
+                    response: err.response,
+                    command: err.command,
+                    host: cfg.host,
+                    port: cfg.port,
+                    secure: cfg.secure,
+                    requireTLS: cfg.requireTLS,
+                    connectionTimeout: cfg.connectionTimeout,
+                    greetingTimeout: cfg.greetingTimeout,
+                    socketTimeout: cfg.socketTimeout
+                }
+            });
             throw err;
         });
     }
@@ -165,7 +179,18 @@ async function sendOtpEmail({ to, code, logger }) {
             logger.warn('mfa_email_not_configured');
         }
     } catch (err) {
-        logger.error('mfa_email_send_failed', { context: { message: err.message, code: err.code, response: err.response, command: err.command } });
+        const cfg = getSmtpConfig();
+        logger.error('mfa_email_send_failed', {
+            context: {
+                message: err.message,
+                code: err.code,
+                response: err.response,
+                command: err.command,
+                host: cfg?.host,
+                port: cfg?.port,
+                secure: cfg?.secure
+            }
+        });
         sentByEmail = false;
     }
     if (!sentByEmail) {
@@ -197,7 +222,18 @@ async function sendVerificationEmail({ to, code, logger }) {
             logger.warn('verify_email_not_configured');
         }
     } catch (err) {
-        logger.error('verify_email_send_failed', { context: { message: err.message, code: err.code, response: err.response, command: err.command } });
+        const cfg = getSmtpConfig();
+        logger.error('verify_email_send_failed', {
+            context: {
+                message: err.message,
+                code: err.code,
+                response: err.response,
+                command: err.command,
+                host: cfg?.host,
+                port: cfg?.port,
+                secure: cfg?.secure
+            }
+        });
         sentByEmail = false;
     }
     if (!sentByEmail) {
