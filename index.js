@@ -17,9 +17,19 @@ const { child } = require('./src/utils/logger');
 
 
 const app = express();
+app.set('etag', false);
 
 // Middlewares
-app.use(cors()); // Permitir peticiones externas
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'x-token',
+        'x-refresh-token'
+    ]
+})); // Permitir peticiones externas
 app.use(express.json()); // Que entienda json
 app.use(requestLogger); // Correlación y métricas de request
 
@@ -91,7 +101,13 @@ app.use('/api/auth', authRoutes);
 app.use('/api/pedidos',pedidoRoutes);
 app.use('/api/ubicaciones',ubicacionesRoutes);
 app.use('/api/carrito', carritoRoutes);
-app.use('/api/user', userRoutes);
+app.use('/api/user', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+    next();
+}, userRoutes);
 
 // Ruta de diagnóstico para simular latencia
 app.get('/api/debug/delay', async (req, res) => {

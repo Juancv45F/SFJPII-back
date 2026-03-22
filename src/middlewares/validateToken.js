@@ -3,7 +3,13 @@ const jwt = require('jsonwebtoken');
 const validateToken = (req, res, next) => {
     // Obtener el token del encabezado (Header)
     // Se espera que venga así: "x-token": "eyJhbGciOiJIUz..."
-    const token = req.header('x-token');
+    const fromXToken = req.header('x-token');
+    const authorization = req.header('authorization');
+    const fromAuthorization =
+        typeof authorization === 'string' && authorization.toLowerCase().startsWith('bearer ')
+            ? authorization.slice(7).trim()
+            : authorization;
+    const token = fromXToken || fromAuthorization;
 
     if (!token) {
         return res.status(401).json({ message: 'No hay token en la petición' });
