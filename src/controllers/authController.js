@@ -58,6 +58,16 @@ function isEmailSimulationEnabled() {
     return process.env.NODE_ENV !== 'production';
 }
 
+function getFromInfo() {
+    const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER;
+    const fromName = process.env.SMTP_FROM_NAME;
+    return {
+        fromEmail,
+        fromName,
+        from: fromName ? `${fromName} <${fromEmail}>` : fromEmail
+    };
+}
+
 function getSmtpConfig() {
     const host = process.env.SMTP_HOST;
     const user = process.env.SMTP_USER;
@@ -75,9 +85,7 @@ function getSmtpConfig() {
     const greetingTimeout = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 10_000;
     const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 20_000;
 
-    const fromEmail = process.env.FROM_EMAIL || user;
-    const fromName = process.env.SMTP_FROM_NAME;
-    const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+    const { from } = getFromInfo();
 
     return {
         host,
@@ -92,6 +100,82 @@ function getSmtpConfig() {
         socketTimeout,
         from
     };
+}
+
+function getHttpEmailProvider() {
+    const provider = String(process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
+    const sendgridKey = process.env.SENDGRID_API_KEY;
+    const brevoKey = process.env.BREVO_API_KEY;
+
+    if (provider === 'sendgrid' && sendgridKey) return { provider: 'sendgrid', apiKey: sendgridKey };
+    if (provider === 'brevo' && brevoKey) return { provider: 'brevo', apiKey: brevoKey };
+
+    if (sendgridKey) return { provider: 'sendgrid', apiKey: sendgridKey };
+    if (brevoKey) return { provider: 'brevo', apiKey: brevoKey };
+
+    return null;
+}
+
+async function sendEmailViaHttp({ to, subject, text, logger }) {
+    const cfg = getHttpEmailProvider();
+    if (!cfg) return false;
+
+    const { fromEmail, fromName } = getFromInfo();
+    if (!fromEmail) {
+        logger?.warn?.('email_from_missing');
+        return false;
+    }
+
+    try {
+        if (cfg.provider === 'sendgrid') {
+            const payload = {
+                personalizations: [{ to: [{ email: to }] }],
+                from: fromName ? { email: fromEmail, name: fromName } : { email: fromEmail },
+                subject,
+                content: [{ type: 'text/plain', value: text }]
+            };
+            await axios.post('https://api.sendgrid.com/v3/mail/send', payload, {
+                headers: {
+                    Authorization: `Bearer ${cfg.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: Number(process.env.EMAIL_HTTP_TIMEOUT_MS) || 10_000
+            });
+            logger?.info?.('email_http_send_success', { context: { provider: cfg.provider, to } });
+            return true;
+        }
+
+        if (cfg.provider === 'brevo') {
+            const payload = {
+                sender: fromName ? { email: fromEmail, name: fromName } : { email: fromEmail },
+                to: [{ email: to }],
+                subject,
+                textContent: text
+            };
+            await axios.post('https://api.brevo.com/v3/smtp/email', payload, {
+                headers: {
+                    'api-key': cfg.apiKey,
+                    'Content-Type': 'application/json'
+                },
+                timeout: Number(process.env.EMAIL_HTTP_TIMEOUT_MS) || 10_000
+            });
+            logger?.info?.('email_http_send_success', { context: { provider: cfg.provider, to } });
+            return true;
+        }
+
+        logger?.warn?.('email_http_provider_unsupported', { context: { provider: cfg.provider } });
+        return false;
+    } catch (err) {
+        logger?.error?.('email_http_send_failed', {
+            context: {
+                provider: cfg.provider,
+                message: err.message,
+                status: err?.response?.status,
+                to
+            }
+        });
+        return false;
+    }
 }
 
 function getSmtpConfigKey(cfg) {
@@ -164,6 +248,17 @@ async function getSmtpTransporter(logger) {
 async function sendOtpEmail({ to, code, logger }) {
     let sentByEmail = false;
     try {
+        const httpPreferred = !!getHttpEmailProvider();
+        if (httpPreferred) {
+            sentByEmail = await sendEmailViaHttp({
+                to,
+                subject: 'Código de acceso (MFA)',
+                text: `Tu código OTP es: ${code}. Expira pronto.`,
+                logger
+            });
+            if (sentByEmail) return true;
+        }
+
         const smtpCfg = getSmtpConfig();
         const transporter = await getSmtpTransporter(logger);
         if (transporter && smtpCfg) {
@@ -207,6 +302,17 @@ async function sendOtpEmail({ to, code, logger }) {
 async function sendVerificationEmail({ to, code, logger }) {
     let sentByEmail = false;
     try {
+        const httpPreferred = !!getHttpEmailProvider();
+        if (httpPreferred) {
+            sentByEmail = await sendEmailViaHttp({
+                to,
+                subject: 'Código de verificación',
+                text: `Tu código de verificación es: ${code}`,
+                logger
+            });
+            if (sentByEmail) return true;
+        }
+
         const smtpCfg = getSmtpConfig();
         const transporter = await getSmtpTransporter(logger);
         if (transporter && smtpCfg) {
