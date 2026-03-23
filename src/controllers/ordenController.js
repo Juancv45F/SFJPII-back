@@ -248,10 +248,43 @@ const actualizarEstadoPedido = async (req, res) => {
 
         const io = req.app.get('socketio');
         if (io) {
+            // 1. Notificación general de actualización (para UI que necesiten refrescar listas)
             io.emit('pedido_actualizado', {
                 pedidoId: String(pedido._id),
                 nuevoEstado: estado
             });
+
+            // 2. Notificación específica para el cliente (Push simulado)
+            // Se asume que el cliente escucha en una sala con su userId
+            const clienteId = String(pedido.userId?._id || pedido.userId);
+            let mensajeCliente = '';
+            switch(estado) {
+                case 'enviado': mensajeCliente = 'Tu pedido está en camino'; break;
+                case 'entregado': mensajeCliente = 'Tu pedido ha sido entregado'; break;
+                case 'cancelado': mensajeCliente = 'Tu pedido ha sido cancelado'; break;
+            }
+            if (mensajeCliente) {
+                io.to(clienteId).emit('notificacion_push_cliente', {
+                    titulo: 'Actualización de Pedido',
+                    mensaje: mensajeCliente,
+                    pedidoId: String(pedido._id),
+                    estado
+                });
+            }
+
+            // 3. Si el pedido fue cancelado por el cliente, notificar al staff
+            // Nota: req.rol nos dice quién está haciendo la petición
+            const esCliente = String(req.rol).toLowerCase() === 'cliente';
+            if (estado === 'cancelado' && esCliente) {
+                io.to('sala_pedidos').emit('nuevo_pedido_notificacion', {
+                    mensaje: '⚠️ Un pedido ha sido CANCELADO por el cliente',
+                    pedidoId: String(pedido._id),
+                    cliente: `${pedido.userId?.nombre} ${pedido.userId?.apellido}`,
+                    total: pedido.total,
+                    hora: new Date(),
+                    tipo: 'cancelacion'
+                });
+            }
         }
 
         res.json({ ok: true, message: 'Estado actualizado', data: pedido });

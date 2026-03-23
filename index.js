@@ -91,13 +91,16 @@ io.on('connection', (socket) => {
     const logger = child({ component: 'socket', socketId: socket.id });
     logger.info('socket_connected');
 
-    // 1. El usuario se une a una sala según su rol (admin o repartidor)
-    socket.on('entrar_sala', (rol) => {
-        if (rol === 'admin' || rol === 'repartidor') {
+    // 1. El usuario se une a una sala según su rol o su propio ID
+    socket.on('entrar_sala', (id) => {
+        if (id === 'admin' || id === 'repartidor' || id === 'editor') {
             socket.join('sala_pedidos'); // Sala exclusiva para staff
-            logger.info('socket_join_room', { context: { room: 'sala_pedidos', rol } });
+            logger.info('socket_join_room', { context: { room: 'sala_pedidos', rol: id } });
+        } else if (id) {
+            // El cliente se une a su propia sala para recibir notificaciones push
+            socket.join(String(id));
+            logger.info('socket_join_room', { context: { room: String(id), userId: id } });
         }
-        
     });
 
     socket.on('disconnect', () => {
