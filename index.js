@@ -20,16 +20,11 @@ const { child } = require('./src/utils/logger');
 
 const app = express();
 app.set('etag', false);
+app.set('trust proxy', 1); // Confía en el primer proxy (necesario para Render/Heroku)
 
-// Middlewares
-app.use(helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" }
-})); // Seguridad extra en los headers
-app.use(generalLimiter); // Protección contra DoS básica
-
-// Configuración de CORS mejorada
+// 1. CONFIGURACIÓN DE CORS (DEBE IR ANTES DE LOS RATE LIMITERS)
 app.use(cors({
-    origin: true, // Refleja el origen de la petición si coincide (útil para desarrollo)
+    origin: true, // Refleja el origen de la petición si coincide (útil para desarrollo y localhost)
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
@@ -40,6 +35,14 @@ app.use(cors({
         'x-correlation-id'
     ]
 })); 
+
+// 2. SEGURIDAD EXTRA (HELMET)
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" }
+})); 
+
+// 3. PROTECCIÓN CONTRA DOS / RATE LIMITING
+app.use(generalLimiter); 
 
 app.use(express.json()); // Que entienda json
 app.use(requestLogger); // Correlación y métricas de request
