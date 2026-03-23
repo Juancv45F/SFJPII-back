@@ -2,7 +2,7 @@ const { Router } = require('express');
 const { check } = require('express-validator');
 
 const { crearPedido, obtenerPedidos, obtenerPedidoPorId } = require('../controllers/ordenController');
-const { validateToken } = require('../middlewares/validateToken');
+const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const { validarCampos } = require('../middlewares/validarCampos');
 
 const router = Router();
@@ -10,6 +10,7 @@ const router = Router();
 router.post('/', [
     // A. Validar que esté logueado
     validateToken,
+    authorizeRoles('cliente'),
 
     // B. Validaciones de datos 
     check('productos', 'La lista de productos es obligatoria').isArray({ min: 1 }),

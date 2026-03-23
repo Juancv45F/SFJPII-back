@@ -322,6 +322,87 @@ async function revokeOtherSessions(req, res) {
   }
 }
 
+async function updateUserRole(req, res) {
+  try {
+    const { id } = req.params;
+    const nextRoleRaw = req.body?.role ?? req.body?.rol;
+    const nextRole = String(nextRoleRaw || '').trim().toLowerCase();
+    const allowed = new Set(['admin', 'editor', 'cliente']);
+    if (!allowed.has(nextRole)) {
+      return res.status(400).json({ message: 'Rol inválido' });
+    }
+
+    const user = await User.findById(id).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+    user.role = nextRole;
+
+    const now = new Date();
+    if (Array.isArray(user.refreshTokens)) {
+      user.refreshTokens = user.refreshTokens.map(t => t && !t.revokedAt ? { ...t, revokedAt: now, lastUsedAt: now } : t);
+    }
+
+    await user.save();
+
+    return res.json({
+      message: 'Rol actualizado',
+      user: {
+        id: String(user._id),
+        email: user.email,
+        rol: user.role
+      }
+    });
+  } catch (error) {
+    const logger = child();
+    logger.error('user_role_update_error', { context: { message: error.message, stack: error.stack } });
+    return res.status(500).json({ message: 'Error al actualizar rol' });
+  }
+}
+
+async function getRecoveryQuestionsStatus(req, res) {
+  try {
+    const user = await User.findById(req.uid).select('recovery.questions').exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    
+    const questions = user.recovery?.questions || [];
+    return res.json({
+      hasQuestions: questions.length > 0,
+      count: questions.length
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Error al obtener estado de preguntas' });
+  }
+}
+
+async function updateRecoveryQuestions(req, res) {
+  try {
+    const { questions } = req.body; // [{ questionId, answer }]
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ message: 'Debes proporcionar al menos una pregunta.' });
+    }
+
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+    const newQuestions = questions.map(q => ({
+      questionId: String(q.questionId).trim(),
+      answerHash: sha256(String(q.answer).toLowerCase().trim()),
+      attempts: 0
+    }));
+
+    user.recovery = {
+      ...user.recovery,
+      questions: newQuestions,
+      questionsBlockedUntil: null
+    };
+
+    await user.save();
+    return res.json({ message: 'Preguntas de seguridad actualizadas con éxito.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Error al actualizar preguntas.' });
+  }
+}
+
 module.exports = {
   getMe,
   changePassword,
@@ -330,5 +411,8 @@ module.exports = {
   updatePreferences,
   listSessions,
   revokeSession,
-  revokeOtherSessions
+  revokeOtherSessions,
+  updateUserRole,
+    updateRecoveryQuestions,
+    getRecoveryQuestionsStatus
 };

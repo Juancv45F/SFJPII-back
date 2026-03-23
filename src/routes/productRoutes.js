@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const { buscarProductos, obtenerTodos, actualizarStock, crearProducto, editarProducto, eliminarProducto, obtenerStock } = require('../controllers/productController');
+const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const storage = multer.memoryStorage();
 const upload = multer({
     storage,
@@ -23,16 +24,16 @@ router.get('/', obtenerTodos);
 router.get('/buscar', buscarProductos);
 
 // Actualizar el Stock de un producto 
-router.put('/:id/stock', actualizarStock);
+router.put('/:id/stock', [validateToken, authorizeRoles('admin', 'editor')], actualizarStock);
 
 // Cear producto
-router.post('/', upload.single('imagen'), crearProducto);
+router.post('/', [validateToken, authorizeRoles('admin', 'editor'), upload.single('imagen')], crearProducto);
 
 // Editar producto
-router.put('/:id', upload.single('imagen'), editarProducto);
+router.put('/:id', [validateToken, authorizeRoles('admin', 'editor'), upload.single('imagen')], editarProducto);
 
 // Eliminar producto
-router.delete('/:id', eliminarProducto);
+router.delete('/:id', [validateToken, authorizeRoles('admin')], eliminarProducto);
 
 // Obtener solo el Stock de un producto
 router.get('/:id/stock', obtenerStock);

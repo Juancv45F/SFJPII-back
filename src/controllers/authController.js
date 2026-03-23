@@ -13,6 +13,7 @@ const sanitize = (v) => typeof v === 'string' ? v.trim() : v;
 const isNonEmpty = (v) => typeof v === 'string' ? v.trim().length > 0 : v !== undefined && v !== null;
 const isLettersSpaces = (v) => /^[A-Za-zÀ-ÖØ-öø-ÿ\s]+$/.test(v);
 
+// Función helper para sha256 (reutilizada del sistema de sesiones)
 const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
 const resendCooldownMs = Number(process.env.RESEND_COOLDOWN_MS) || 60 * 1000;
 
@@ -353,28 +354,53 @@ async function sendVerificationEmail({ to, code, logger }) {
     return sentByEmail;
 }
 
-async function persistRefreshToken({ user, refreshToken, req }) {
+async function persistRefreshToken({ user, refreshToken, req, isRotation = false, oldTokenHash = null }) {
     const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
     const decoded = jwt.verify(refreshToken, refreshSecret);
     const expMs = decoded && decoded.exp ? decoded.exp * 1000 : (Date.now() + 7 * 24 * 60 * 60 * 1000);
     const tokenHash = sha256(refreshToken);
     const sessionId = decoded && decoded.sid ? String(decoded.sid) : (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+    
+    // Obtener IP y User-Agent
     const userAgent = req?.header?.('user-agent') || req?.headers?.['user-agent'];
-    const ip = (req && (req.ip || req.headers?.['x-forwarded-for'])) ? String(req.headers?.['x-forwarded-for'] || req.ip) : undefined;
+    let ip = req?.ip || req?.headers?.['x-forwarded-for'] || req?.connection?.remoteAddress;
+    if (Array.isArray(ip)) ip = ip[0];
+    if (typeof ip === 'string' && ip.includes(',')) ip = ip.split(',')[0].trim();
+
     user.refreshTokens = Array.isArray(user.refreshTokens) ? user.refreshTokens : [];
+
+    if (isRotation && oldTokenHash) {
+        // Si es rotación, buscamos el token viejo y lo marcamos como revocado
+        const idx = user.refreshTokens.findIndex(t => t.tokenHash === oldTokenHash);
+        if (idx !== -1) {
+            user.refreshTokens[idx].revokedAt = new Date();
+            user.refreshTokens[idx].replacedByTokenHash = tokenHash;
+        }
+    }
+
+    // Agregar la nueva sesión / token
     user.refreshTokens.push({
         sessionId,
         tokenHash,
         expiresAt: new Date(expMs),
         lastUsedAt: new Date(),
-        userAgent: userAgent ? String(userAgent) : undefined,
-        ip: ip ? String(ip) : undefined
+        userAgent: userAgent ? String(userAgent).substring(0, 500) : 'Unknown',
+        ip: ip ? String(ip) : 'Unknown'
     });
-    const maxTokens = Number(process.env.JWT_REFRESH_MAX_TOKENS) || 10;
+
+    // Limitar número de tokens (opcional, para evitar saturar el documento)
+    const maxTokens = Number(process.env.JWT_REFRESH_MAX_TOKENS) || 20;
     if (user.refreshTokens.length > maxTokens) {
-        user.refreshTokens.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+        // Eliminar los más viejos que ya estén expirados o revocados primero
+        user.refreshTokens.sort((a, b) => {
+            const aActive = !a.revokedAt && new Date(a.expiresAt) > new Date();
+            const bActive = !b.revokedAt && new Date(b.expiresAt) > new Date();
+            if (aActive !== bActive) return aActive ? 1 : -1;
+            return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+        });
         user.refreshTokens = user.refreshTokens.slice(user.refreshTokens.length - maxTokens);
     }
+
     await user.save();
 }
 // REGISTRO COMPLETO (Usuario + Ubicación + Captcha)
@@ -793,25 +819,43 @@ const refresh = async (req, res) => {
         const tokenHash = sha256(refreshToken);
         const tokens = Array.isArray(user.refreshTokens) ? user.refreshTokens : [];
         const idx = tokens.findIndex(t => t && t.tokenHash === tokenHash);
-        if (idx === -1) return res.status(401).json({ message: 'Refresh token revocado' });
+        
+        // Si el token no está en BD, podría ser un intento de reutilización de un token viejo ya rotado
+        if (idx === -1) {
+            // DETECTAR REUSO: Si el token no está, pero quizás el sid sí está en otros tokens revocados...
+            // Por simplicidad, si el token no existe en la lista de activos/recientes, forzamos logout de todas las sesiones del usuario (Detección de Robo)
+            user.refreshTokens = []; // Revocación nuclear
+            await user.save();
+            return res.status(401).json({ message: 'Refresh token inválido o reutilizado. Todas las sesiones han sido cerradas por seguridad.' });
+        }
 
         const entry = tokens[idx];
         const now = new Date();
-        if (entry.revokedAt) return res.status(401).json({ message: 'Refresh token revocado' });
+        
+        // Si el token ya fue revocado, sospechamos robo (Re-use detection)
+        if (entry.revokedAt) {
+            user.refreshTokens = []; // Nuclear
+            await user.save();
+            return res.status(401).json({ message: 'Refresh token reutilizado. Por seguridad se cerraron todas las sesiones.' });
+        }
+
         if (entry.expiresAt && new Date(entry.expiresAt).getTime() < now.getTime()) {
             return res.status(401).json({ message: 'Refresh token expirado' });
         }
 
         const currentSessionId = decoded.sid || entry.sessionId || tokenHash;
-        if (!user.refreshTokens[idx].sessionId) {
-            user.refreshTokens[idx].sessionId = String(currentSessionId);
-        }
+        
+        // ROTACIÓN: Creamos uno nuevo e invalidamos el actual
         const newRefreshToken = createRefreshToken(user, currentSessionId);
-        const newHash = sha256(newRefreshToken);
-        user.refreshTokens[idx].revokedAt = now;
-        user.refreshTokens[idx].replacedByTokenHash = newHash;
-        user.refreshTokens[idx].lastUsedAt = now;
-        await persistRefreshToken({ user, refreshToken: newRefreshToken, req });
+        
+        // El persistRefreshToken ahora maneja la invalidación del viejo si le pasamos isRotation: true
+        await persistRefreshToken({ 
+            user, 
+            refreshToken: newRefreshToken, 
+            req, 
+            isRotation: true, 
+            oldTokenHash: tokenHash 
+        });
 
         const token = createAccessToken(user);
         return res.json({ token, refreshToken: newRefreshToken });
@@ -822,6 +866,231 @@ const refresh = async (req, res) => {
     }
 };
 
+/**
+ * SSO: Genera un token temporal para "saltar" de App A a App B
+ */
+const generateSsoToken = async (req, res) => {
+    try {
+        const user = await User.findById(req.uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+        const ssoSecret = process.env.JWT_SSO_SECRET || process.env.JWT_SECRET;
+        const expiresIn = '1m'; // Token muy corto, solo para el intercambio
+        const payload = { 
+            uid: String(user._id), 
+            typ: 'sso_exchange',
+            origin: 'AppA'
+        };
+        const ssoToken = jwt.sign(payload, ssoSecret, { expiresIn });
+
+        res.json({ ssoToken });
+    } catch (error) {
+        res.status(500).json({ message: 'Error al generar token SSO' });
+    }
+};
+
+/**
+ * SSO: Valida el token temporal y emite una sesión real en App B
+ */
+/**
+ * RECO: Paso 1 - Solicitar recuperación
+ */
+const requestPasswordRecovery = async (req, res) => {
+    try {
+        const { email, method } = req.body; // method: 'email', 'sms', 'call'
+        const user = await User.findOne({ email }).exec();
+        
+        if (!user) {
+            // Seguridad: no revelar si el email existe
+            return res.json({ message: 'Si el correo existe, se enviarán instrucciones.' });
+        }
+
+        const now = new Date();
+        const cooldown = 5 * 60 * 1000; // 5 minutos entre solicitudes
+        if (user.recovery?.lastRequestedAt && (now - user.recovery.lastRequestedAt < cooldown)) {
+            return res.status(429).json({ message: 'Debes esperar antes de solicitar otro código.' });
+        }
+
+        const token = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+        const tokenHash = sha256(token);
+        const expiresAt = new Date(now.getTime() + 15 * 60 * 1000); // 15 min
+
+        user.recovery = {
+            ...user.recovery,
+            tokenHash,
+            tokenExpiresAt: expiresAt,
+            tokenAttempts: 0,
+            lastRequestedAt: now
+        };
+        await user.save();
+
+        // Simulación de envío según método
+        let msg = '';
+        if (method === 'sms') {
+            msg = `[SIMULACIÓN SMS] Código de recuperación: ${token}`;
+            console.log(msg);
+        } else if (method === 'call') {
+            msg = `[SIMULACIÓN LLAMADA] Su código es: ${token.split('').join('... ')}`;
+            console.log(msg);
+        } else {
+            // Email (implementar con nodemailer si se desea, por ahora log)
+            msg = `[SIMULACIÓN EMAIL] Código de recuperación: ${token}`;
+            console.log(msg);
+        }
+
+        return res.json({ 
+            message: 'Código enviado correctamente.',
+            method,
+            expiresIn: '15 min'
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error al procesar recuperación.' });
+    }
+};
+
+/**
+ * RECO: Paso 2 - Verificar Token y Preguntas Secretas
+ */
+const verifyRecoveryStep = async (req, res) => {
+    try {
+        const { email, token, answers } = req.body; // answers: [{ questionId, answer }]
+        const user = await User.findOne({ email }).exec();
+
+        if (!user || !user.recovery?.tokenHash) {
+            return res.status(400).json({ message: 'Solicitud inválida.' });
+        }
+
+        // 1. Validar Bloqueo por intentos
+        if (user.recovery.questionsBlockedUntil && user.recovery.questionsBlockedUntil > new Date()) {
+            return res.status(403).json({ message: 'Cuenta temporalmente bloqueada por demasiados intentos.' });
+        }
+
+        // 2. Validar Token
+        if (new Date() > user.recovery.tokenExpiresAt) {
+            return res.status(401).json({ message: 'El código ha expirado.' });
+        }
+
+        if (user.recovery.tokenAttempts >= 3) {
+            return res.status(401).json({ message: 'Demasiados intentos con el código.' });
+        }
+
+        if (sha256(token) !== user.recovery.tokenHash) {
+            user.recovery.tokenAttempts += 1;
+            await user.save();
+            return res.status(401).json({ message: 'Código incorrecto.' });
+        }
+
+        // 3. Validar Preguntas Secretas (si existen en el modelo para este usuario)
+        if (user.recovery.questions && user.recovery.questions.length > 0) {
+            if (!answers || answers.length === 0) {
+                return res.status(400).json({ message: 'Se requieren respuestas a las preguntas secretas.' });
+            }
+
+            for (const q of user.recovery.questions) {
+                const provided = answers.find(a => a.questionId === q.questionId);
+                if (!provided || sha256(provided.answer.toLowerCase().trim()) !== q.answerHash) {
+                    q.attempts += 1;
+                    if (q.attempts >= 3) {
+                        user.recovery.questionsBlockedUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 min bloqueo
+                    }
+                    await user.save();
+                    return res.status(401).json({ message: 'Respuestas de seguridad incorrectas.' });
+                }
+            }
+        }
+
+        // Si todo OK, generamos un JWT de un solo uso para permitir el cambio de password
+        const resetSecret = process.env.JWT_SECRET + user.password; // Sal única
+        const resetToken = jwt.sign({ uid: user._id, type: 'reset' }, resetSecret, { expiresIn: '10m' });
+
+        return res.json({ 
+            message: 'Validación exitosa.',
+            resetToken 
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error en la validación.' });
+    }
+};
+
+/**
+ * RECO: Paso 3 - Reset Final
+ */
+const resetPassword = async (req, res) => {
+    try {
+        const { email, resetToken, newPassword } = req.body;
+        const user = await User.findOne({ email }).exec();
+
+        if (!user) return res.status(400).json({ message: 'Usuario no encontrado.' });
+
+        const resetSecret = process.env.JWT_SECRET + user.password;
+        let decoded;
+        try {
+            decoded = jwt.verify(resetToken, resetSecret);
+        } catch (e) {
+            return res.status(401).json({ message: 'Token de reseteo inválido o expirado.' });
+        }
+
+        if (decoded.uid !== String(user._id) || decoded.type !== 'reset') {
+            return res.status(401).json({ message: 'Token inválido.' });
+        }
+
+        // Cambiar password
+        const salt = await bcrypt.genSalt(10);
+        user.password = await bcrypt.hash(newPassword, salt);
+        
+        // Limpiar tokens de recuperación e invalidar sesiones actuales
+        user.recovery.tokenHash = null;
+        user.recovery.tokenExpiresAt = null;
+        user.refreshTokens = []; 
+        
+        await user.save();
+
+        return res.json({ message: 'Contraseña actualizada con éxito.' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error al actualizar contraseña.' });
+    }
+};
+
+const validateSsoToken = async (req, res) => {
+    try {
+        const { ssoToken } = req.body;
+        if (!ssoToken) return res.status(400).json({ message: 'Falta ssoToken' });
+
+        const ssoSecret = process.env.JWT_SSO_SECRET || process.env.JWT_SECRET;
+        let decoded;
+        try {
+            decoded = jwt.verify(ssoToken, ssoSecret);
+        } catch (err) {
+            return res.status(401).json({ message: 'Token SSO inválido o expirado' });
+        }
+
+        if (decoded.typ !== 'sso_exchange') {
+            return res.status(401).json({ message: 'Tipo de token inválido' });
+        }
+
+        const user = await User.findById(decoded.uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+        // Emitir nuevos tokens de sesión para App B
+        const token = createAccessToken(user);
+        const refreshToken = createRefreshToken(user);
+        await persistRefreshToken({ user, refreshToken, req });
+
+        res.json({
+            message: 'SSO Exitoso',
+            token,
+            refreshToken,
+            user: {
+                id: String(user._id),
+                nombre: user.nombre,
+                rol: user.role || 'cliente'
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error al validar token SSO' });
+    }
+};
+
 module.exports = {
     register,
     verifyCode,
@@ -829,5 +1098,10 @@ module.exports = {
     login,
     resendMfaOtp,
     verifyMfa,
-    refresh
+    refresh,
+    generateSsoToken,
+    validateSsoToken,
+    requestPasswordRecovery,
+    verifyRecoveryStep,
+    resetPassword
 };

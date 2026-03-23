@@ -1,12 +1,12 @@
 const { Router } = require('express');
-const { validateToken } = require('../middlewares/validateToken');
+const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const { getCarrito, syncCarrito, removeItem, addItem } = require('../controllers/carritoController');
 
 const router = Router();
 
-router.get('/', [validateToken], getCarrito);
-router.post('/sync', [validateToken], syncCarrito);
-router.post('/:id', [validateToken], addItem);
-router.delete('/:id', [validateToken], removeItem);
+router.get('/', [validateToken, authorizeRoles('cliente')], getCarrito);
+router.post('/sync', [validateToken, authorizeRoles('cliente')], syncCarrito);
+router.post('/:id', [validateToken, authorizeRoles('cliente')], addItem);
+router.delete('/:id', [validateToken, authorizeRoles('cliente')], removeItem);
 
 module.exports = router;

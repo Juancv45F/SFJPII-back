@@ -25,7 +25,22 @@ const schema = new mongoose.Schema({
   verificationCode: { type: String },
   verificationCodeSentAt: { type: Date },
   isVerified: { type: Boolean, default: false },
-  role: { type: String, default: 'cliente' },
+  role: { type: String, enum: ['admin', 'editor', 'cliente'], default: 'cliente' },
+  
+  // Recuperación de Contraseña
+  recovery: {
+    tokenHash: { type: String },
+    tokenExpiresAt: { type: Date },
+    tokenAttempts: { type: Number, default: 0 },
+    lastRequestedAt: { type: Date },
+    questions: [{
+      questionId: { type: String }, // e.g., 'mascota', 'ciudad'
+      answerHash: { type: String },
+      attempts: { type: Number, default: 0 }
+    }],
+    questionsBlockedUntil: { type: Date }
+  },
+
   mfa: {
     enabled: { type: Boolean, default: false },
     channel: { type: String, default: 'email' },

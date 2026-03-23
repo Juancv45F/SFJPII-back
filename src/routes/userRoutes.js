@@ -1,5 +1,5 @@
 const { Router } = require('express');
-const { validateToken } = require('../middlewares/validateToken');
+const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const {
   getMe,
   changePassword,
@@ -8,14 +8,22 @@ const {
   updatePreferences,
   listSessions,
   revokeSession,
-  revokeOtherSessions
+  revokeOtherSessions,
+  updateUserRole,
+  updateRecoveryQuestions,
+  getRecoveryQuestionsStatus
 } = require('../controllers/userController');
 
 const router = Router();
 
 router.get('/me', [validateToken], getMe);
+router.put('/:id/role', [validateToken, authorizeRoles('admin')], updateUserRole);
 router.put('/password', [validateToken], changePassword);
 router.put('/mfa', [validateToken], updateMfa);
+
+// Preguntas de seguridad
+router.get('/recovery/questions', [validateToken], getRecoveryQuestionsStatus);
+router.put('/recovery/questions', [validateToken], updateRecoveryQuestions);
 
 router.get('/preferences', [validateToken], getPreferences);
 router.put('/preferences', [validateToken], updatePreferences);

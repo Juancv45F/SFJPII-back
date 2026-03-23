@@ -175,7 +175,10 @@ const crearPedido = async (req, res) => {
 
 const obtenerPedidos = async (req, res) => {
     try {
-        const pedidos = await Pedido.find({})
+        const role = String(req.rol || '').toLowerCase();
+        const filter = role === 'cliente' ? { userId: req.uid } : {};
+
+        const pedidos = await Pedido.find(filter)
             .populate('userId', 'nombre apellido email')
             .sort({ createdAt: -1 })
             .exec();
@@ -193,6 +196,7 @@ const obtenerPedidoPorId = async (req, res) => {
     const { id } = req.params;
 
     try {
+        const role = String(req.rol || '').toLowerCase();
         const pedido = await Pedido.findById(id)
             .populate('userId', 'nombre apellido email')
             .exec();
@@ -201,6 +205,13 @@ const obtenerPedidoPorId = async (req, res) => {
             return res.status(404).json({
                 ok: false,
                 message: 'Pedido no encontrado'
+            });
+        }
+
+        if (role === 'cliente' && String(pedido.userId?._id || pedido.userId) !== String(req.uid)) {
+            return res.status(403).json({
+                ok: false,
+                message: 'No tienes permisos para ver este pedido'
             });
         }
 

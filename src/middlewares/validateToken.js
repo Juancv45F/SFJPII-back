@@ -31,6 +31,26 @@ const validateToken = (req, res, next) => {
     }
 };
 
+const authorizeRoles = (...allowedRoles) => {
+    const normalizedAllowed = allowedRoles
+        .flat()
+        .map(r => String(r || '').trim().toLowerCase())
+        .filter(Boolean);
+
+    return (req, res, next) => {
+        const role = String(req.rol || '').trim().toLowerCase();
+        if (!role) {
+            return res.status(403).json({ message: 'No tienes permisos para realizar esta acción' });
+        }
+        if (normalizedAllowed.length === 0) return next();
+        if (!normalizedAllowed.includes(role)) {
+            return res.status(403).json({ message: 'No tienes permisos para realizar esta acción' });
+        }
+        return next();
+    };
+};
+
 module.exports = {
-    validateToken
+    validateToken,
+    authorizeRoles
 };
