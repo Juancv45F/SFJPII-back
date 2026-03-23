@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { register, verifyCode, resendVerifyCode, login, resendMfaOtp, verifyMfa, refresh, generateSsoToken, validateSsoToken, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
 const { validateToken } = require('../middlewares/validateToken');
+const { authLimiter } = require('../middlewares/security');
 
 // Registro (Recibe Datos Personales + Ubicación + Captcha)
-router.post('/register', register);
+router.post('/register', [authLimiter], register);
 
 // Verificación SMS
 router.post('/verify', verifyCode);
@@ -12,7 +13,7 @@ router.post('/verify', verifyCode);
 router.post('/verify/resend', resendVerifyCode);
 
 // Iniciar Sesión
-router.post('/login', login);
+router.post('/login', [authLimiter], login);
 
 router.post('/mfa/resend', resendMfaOtp);
 

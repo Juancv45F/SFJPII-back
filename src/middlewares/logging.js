@@ -36,16 +36,20 @@ function requestLogger(req, res, next) {
 
 function errorHandler(err, req, res, next) {
   const status = err.status || 500;
-  const message = err.message || 'Internal Server Error';
-  const stack = err.stack;
+  const isProduction = process.env.NODE_ENV === 'production';
+  const message = isProduction ? 'Error interno del servidor' : err.message || 'Internal Server Error';
+  const stack = isProduction ? undefined : err.stack;
   const logger = req.logger || child({ method: req.method, path: req.originalUrl || req.url });
 
   logger.error('exception', {
     status: status,
-    context: { stack },
+    context: { stack: err.stack }, // Siempre logueamos el stack internamente
   });
 
-  res.status(status).json({ message });
+  res.status(status).json({ 
+    message,
+    ...(stack ? { stack } : {})
+  });
 }
 
 module.exports = {

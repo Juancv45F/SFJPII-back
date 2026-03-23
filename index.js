@@ -3,7 +3,9 @@ const express = require ('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const helmet = require('helmet');
 const { connect } = require('./src/config/mongoose');
+const { generalLimiter } = require('./src/middlewares/security');
 const productRoutes = require('./src/routes/productRoutes');
 const authRoutes = require('./src/routes/authRoutes');
 const pedidoRoutes = require('./src/routes/pedidosRoutes');
@@ -20,6 +22,8 @@ const app = express();
 app.set('etag', false);
 
 // Middlewares
+app.use(helmet()); // Seguridad extra en los headers
+app.use(generalLimiter); // Protección contra DoS básica
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -124,12 +128,16 @@ app.get('/api/debug/error', (req, res) => {
 // Manejo global de errores
 app.use(errorHandler);
 
-// Iniciar servidor en puerto correspondiente
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    const logger = child();
-    logger.info('server_started', { context: { url: `http://localhost:${PORT}` } });
-})
+// Solo iniciar si no estamos en modo test
+if (process.env.NODE_ENV !== 'test') {
+    const PORT = process.env.PORT || 3000;
+    server.listen(PORT, () => {
+        const logger = child();
+        logger.info('server_started', { context: { url: `http://localhost:${PORT}` } });
+    })
+}
+
+module.exports = { app, server };
 
 // Captura global de errores no manejados
 process.on('uncaughtException', (err) => {
