@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, verifyCode, resendVerifyCode, login, resendMfaOtp, verifyMfa, refresh, generateSsoToken, validateSsoToken } = require('../controllers/authController');
+const { register, verifyCode, resendVerifyCode, login, resendMfaOtp, verifyMfa, refresh, generateSsoToken, validateSsoToken, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
 const { validateToken } = require('../middlewares/validateToken');
 
 // Registro (Recibe Datos Personales + Ubicación + Captcha)
