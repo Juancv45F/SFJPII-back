@@ -228,8 +228,41 @@ const obtenerPedidoPorId = async (req, res) => {
     }
 };
 
+const actualizarEstadoPedido = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { estado } = req.body;
+        const validos = ['pendiente', 'enviado', 'entregado', 'cancelado'];
+
+        if (!validos.includes(estado)) {
+            return res.status(400).json({ ok: false, message: 'Estado no válido' });
+        }
+
+        const pedido = await Pedido.findByIdAndUpdate(id, { estado }, { new: true })
+            .populate('userId', 'nombre apellido email')
+            .exec();
+
+        if (!pedido) {
+            return res.status(404).json({ ok: false, message: 'Pedido no encontrado' });
+        }
+
+        const io = req.app.get('socketio');
+        if (io) {
+            io.emit('pedido_actualizado', {
+                pedidoId: String(pedido._id),
+                nuevoEstado: estado
+            });
+        }
+
+        res.json({ ok: true, message: 'Estado actualizado', data: pedido });
+    } catch (error) {
+        res.status(500).json({ ok: false, message: 'Error al actualizar pedido' });
+    }
+};
+
 module.exports = {
     crearPedido,
     obtenerPedidos,
-    obtenerPedidoPorId
+    obtenerPedidoPorId,
+    actualizarEstadoPedido
 };

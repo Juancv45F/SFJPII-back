@@ -1,7 +1,7 @@
 const { Router } = require('express');
 const { check } = require('express-validator');
 
-const { crearPedido, obtenerPedidos, obtenerPedidoPorId } = require('../controllers/ordenController');
+const { crearPedido, obtenerPedidos, obtenerPedidoPorId, actualizarEstadoPedido } = require('../controllers/ordenController');
 const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const { validarCampos } = require('../middlewares/validarCampos');
 
@@ -39,5 +39,10 @@ router.get('/', [
 router.get('/:id', [
     validateToken
 ], obtenerPedidoPorId);
+
+router.patch('/:id/estado', [
+    validateToken,
+    authorizeRoles('admin', 'editor')
+], actualizarEstadoPedido);
 
 module.exports = router;

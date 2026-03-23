@@ -22,18 +22,25 @@ const app = express();
 app.set('etag', false);
 
 // Middlewares
-app.use(helmet()); // Seguridad extra en los headers
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" }
+})); // Seguridad extra en los headers
 app.use(generalLimiter); // Protección contra DoS básica
+
+// Configuración de CORS mejorada
 app.use(cors({
-    origin: '*',
+    origin: true, // Refleja el origen de la petición si coincide (útil para desarrollo)
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
         'Authorization',
         'x-token',
-        'x-refresh-token'
+        'x-refresh-token',
+        'x-correlation-id'
     ]
-})); // Permitir peticiones externas
+})); 
+
 app.use(express.json()); // Que entienda json
 app.use(requestLogger); // Correlación y métricas de request
 
