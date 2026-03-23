@@ -42,7 +42,7 @@ router.get('/:id', [
 
 router.patch('/:id/estado', [
     validateToken,
-    authorizeRoles('admin', 'editor')
+    authorizeRoles('admin', 'editor', 'cliente')
 ], actualizarEstadoPedido);
 
 module.exports = router;

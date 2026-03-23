@@ -238,13 +238,34 @@ const actualizarEstadoPedido = async (req, res) => {
             return res.status(400).json({ ok: false, message: 'Estado no válido' });
         }
 
+        // Buscar el pedido primero para verificar pertenencia si es cliente
+        const pedidoExistente = await Pedido.findById(id).exec();
+
+        if (!pedidoExistente) {
+            return res.status(404).json({ ok: false, message: 'Pedido no encontrado' });
+        }
+
+        const role = String(req.rol || '').toLowerCase();
+        
+        // REGLAS DE SEGURIDAD PARA CLIENTE
+        if (role === 'cliente') {
+            // 1. Solo puede cancelar sus propios pedidos
+            if (String(pedidoExistente.userId) !== String(req.uid)) {
+                return res.status(403).json({ ok: false, message: 'No tienes permiso para modificar este pedido' });
+            }
+            // 2. Solo puede cambiar el estado a 'cancelado'
+            if (estado !== 'cancelado') {
+                return res.status(403).json({ ok: false, message: 'Los clientes solo pueden cancelar pedidos' });
+            }
+            // 3. Solo puede cancelar si el pedido aún está 'pendiente'
+            if (pedidoExistente.estado !== 'pendiente') {
+                return res.status(400).json({ ok: false, message: 'No se puede cancelar un pedido que ya ha sido procesado o enviado' });
+            }
+        }
+
         const pedido = await Pedido.findByIdAndUpdate(id, { estado }, { new: true })
             .populate('userId', 'nombre apellido email')
             .exec();
-
-        if (!pedido) {
-            return res.status(404).json({ ok: false, message: 'Pedido no encontrado' });
-        }
 
         const io = req.app.get('socketio');
         if (io) {
