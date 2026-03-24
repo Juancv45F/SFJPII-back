@@ -1,6 +1,8 @@
 const request = require('supertest');
 const { app } = require('../index');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
+const User = require('../src/models-mongo/user');
 
 describe('Test de seguridad', () => {
     
@@ -57,5 +59,48 @@ describe('Test de seguridad', () => {
             
         // Si no hay token válido, dará 401, pero probamos que la ruta está protegida
         expect([200, 401]).toContain(response.status);
+    });
+
+    test('Debe revocar una sesión sin provocar error 500', async () => {
+        const email = `revoke_${Date.now()}_${Math.random().toString(16).slice(2)}@test.com`;
+        const user = await User.create({
+            nombre: 'Test',
+            apellido: 'User',
+            email,
+            password: 'hashed',
+            role: 'cliente',
+            isVerified: true,
+            ubicaciones: [],
+            refreshTokens: [{
+                sessionId: 'sess_test_1',
+                tokenHash: `hash_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+                createdAt: new Date(),
+                lastUsedAt: new Date(),
+                expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+                userAgent: 'jest',
+                ip: '127.0.0.1'
+            }]
+        });
+
+        const token = jwt.sign(
+            { uid: String(user._id), rol: 'cliente' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        const response = await request(app)
+            .post('/api/user/sessions/revoke')
+            .set('Authorization', `Bearer ${token}`)
+            .send({ sessionId: 'sess_test_1' });
+
+        expect(response.status).toBe(200);
+        expect(response.body.message).toMatch(/Sesión (cerrada|no encontrada)/);
+
+        const updated = await User.findById(user._id).select('refreshTokens').lean().exec();
+        const tokenEntry = (updated?.refreshTokens || []).find(t => t && t.sessionId === 'sess_test_1');
+        expect(tokenEntry).toBeTruthy();
+        expect(tokenEntry.revokedAt).toBeTruthy();
+
+        await User.deleteOne({ _id: user._id }).exec();
     });
 });

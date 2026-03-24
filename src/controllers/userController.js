@@ -127,7 +127,11 @@ async function changePassword(req, res) {
 
     const now = new Date();
     if (Array.isArray(user.refreshTokens)) {
-      user.refreshTokens = user.refreshTokens.map(t => t && !t.revokedAt ? { ...t, revokedAt: now } : t);
+      for (const t of user.refreshTokens) {
+        if (!t || t.revokedAt) continue;
+        t.revokedAt = now;
+        t.lastUsedAt = now;
+      }
     }
 
     await user.save();
@@ -254,15 +258,17 @@ async function revokeSession(req, res) {
 
     const now = new Date();
     let revokedAny = false;
-    user.refreshTokens = Array.isArray(user.refreshTokens) ? user.refreshTokens.map(t => {
-      if (!t) return t;
-      const sid = String(t.sessionId || t.tokenHash || '');
-      if (sid && sid === String(sessionId) && !t.revokedAt) {
-        revokedAny = true;
-        return { ...t, revokedAt: now, lastUsedAt: now };
+    if (Array.isArray(user.refreshTokens)) {
+      for (const t of user.refreshTokens) {
+        if (!t) continue;
+        const sid = String(t.sessionId || t.tokenHash || '');
+        if (sid && sid === String(sessionId) && !t.revokedAt) {
+          revokedAny = true;
+          t.revokedAt = now;
+          t.lastUsedAt = now;
+        }
       }
-      return t;
-    }) : [];
+    }
 
     await user.save();
     return res.json({ message: revokedAny ? 'Sesión cerrada' : 'Sesión no encontrada' });
@@ -303,15 +309,17 @@ async function revokeOtherSessions(req, res) {
     const currentSessionId = String(entry.sessionId || tokenHash);
     const now = new Date();
     let revokedCount = 0;
-    user.refreshTokens = Array.isArray(user.refreshTokens) ? user.refreshTokens.map(t => {
-      if (!t) return t;
-      const sid = String(t.sessionId || t.tokenHash || '');
-      if (sid && sid !== currentSessionId && !t.revokedAt) {
-        revokedCount += 1;
-        return { ...t, revokedAt: now, lastUsedAt: now };
+    if (Array.isArray(user.refreshTokens)) {
+      for (const t of user.refreshTokens) {
+        if (!t) continue;
+        const sid = String(t.sessionId || t.tokenHash || '');
+        if (sid && sid !== currentSessionId && !t.revokedAt) {
+          revokedCount += 1;
+          t.revokedAt = now;
+          t.lastUsedAt = now;
+        }
       }
-      return t;
-    }) : [];
+    }
 
     await user.save();
     return res.json({ message: 'Sesiones remotas cerradas', revokedCount });
@@ -339,7 +347,11 @@ async function updateUserRole(req, res) {
 
     const now = new Date();
     if (Array.isArray(user.refreshTokens)) {
-      user.refreshTokens = user.refreshTokens.map(t => t && !t.revokedAt ? { ...t, revokedAt: now, lastUsedAt: now } : t);
+      for (const t of user.refreshTokens) {
+        if (!t || t.revokedAt) continue;
+        t.revokedAt = now;
+        t.lastUsedAt = now;
+      }
     }
 
     await user.save();
