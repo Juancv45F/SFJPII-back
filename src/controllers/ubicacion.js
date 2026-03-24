@@ -66,7 +66,67 @@ const crearUbicacion = async (req, res = response) => {
     }
 }
 
+const eliminarUbicacion = async (req, res = response) => {
+    const userId = req.uid;
+    const { id: ubicacionId } = req.params;
+
+    try {
+        const user = await User.findById(userId).exec();
+        if (!user) {
+            return res.status(404).json({ ok: false, msg: 'Usuario no encontrado' });
+        }
+
+        user.ubicaciones = user.ubicaciones.filter(u => String(u._id) !== ubicacionId);
+        await user.save();
+
+        res.json({
+            ok: true,
+            msg: 'Ubicación eliminada'
+        });
+    } catch (error) {
+        res.status(500).json({ ok: false, msg: 'Error al eliminar ubicación' });
+    }
+}
+
+const actualizarUbicacion = async (req, res = response) => {
+    const userId = req.uid;
+    const { id: ubicacionId } = req.params;
+    const { calle, numero, codigo_postal, alias, descripcion } = req.body;
+
+    try {
+        const user = await User.findById(userId).exec();
+        if (!user) {
+            return res.status(404).json({ ok: false, msg: 'Usuario no encontrado' });
+        }
+
+        const index = user.ubicaciones.findIndex(u => String(u._id) === ubicacionId);
+        if (index === -1) {
+            return res.status(404).json({ ok: false, msg: 'Ubicación no encontrada' });
+        }
+
+        user.ubicaciones[index] = {
+            ...user.ubicaciones[index].toObject(),
+            calle,
+            numero,
+            codigo_postal,
+            alias,
+            descripcion
+        };
+
+        await user.save();
+
+        res.json({
+            ok: true,
+            data: user.ubicaciones[index]
+        });
+    } catch (error) {
+        res.status(500).json({ ok: false, msg: 'Error al actualizar ubicación' });
+    }
+}
+
 module.exports = {
     obtenerUbicaciones,
-    crearUbicacion
+    crearUbicacion,
+    actualizarUbicacion,
+    eliminarUbicacion
 }

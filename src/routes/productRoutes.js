@@ -1,7 +1,18 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { buscarProductos, obtenerTodos, actualizarStock, crearProducto, editarProducto, eliminarProducto, obtenerStock } = require('../controllers/productController');
+const { 
+    buscarProductos, 
+    obtenerTodos, 
+    actualizarStock, 
+    crearProducto, 
+    editarProducto, 
+    eliminarProducto, 
+    obtenerStock, 
+    obtenerCategorias,
+    actualizarCategoria,
+    eliminarCategoria 
+} = require('../controllers/productController');
 const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -22,6 +33,13 @@ router.get('/', obtenerTodos);
 
 // Ruta para el Buscador (Simple y Avanzado)
 router.get('/buscar', buscarProductos);
+
+// Ruta para obtener las categorías
+router.get('/categorias', obtenerCategorias);
+
+// Rutas para gestionar categorías globalmente
+router.put('/categorias/:nombreAntiguo', [validateToken, authorizeRoles('admin', 'editor')], actualizarCategoria);
+router.delete('/categorias/:nombre', [validateToken, authorizeRoles('admin')], eliminarCategoria);
 
 // Actualizar el Stock de un producto 
 router.put('/:id/stock', [validateToken, authorizeRoles('admin', 'editor')], actualizarStock);

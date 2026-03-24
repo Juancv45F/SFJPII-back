@@ -107,9 +107,39 @@ const obtenerStock = async (req, res) => {
     }
 };
 
+const obtenerCategorias = async (req, res) => {
+    try {
+        // Obtenemos las categorías únicas usando agregación para traer también la descripción y el ID
+        const categorias = await Producto.aggregate([
+            { $match: { 'categoria.nombre': { $exists: true, $ne: null } } },
+            { $group: { 
+                _id: '$categoria.nombre', 
+                nombre: { $first: '$categoria.nombre' },
+                descripcion: { $first: '$categoria.descripcion' },
+                _id_mongo: { $first: '$categoria._id' },
+                activa: { $first: '$categoria.activa' }
+            } },
+            { $project: { 
+                _id: '$_id_mongo', 
+                nombre: 1, 
+                descripcion: 1,
+                activa: 1
+            } }
+        ]).exec();
+
+        res.json({
+            ok: true,
+            data: categorias
+        });
+    } catch (error) {
+        console.error('Error al obtener categorías:', error);
+        res.status(500).json({ ok: false, message: 'Error al obtener categorías' });
+    }
+};
+
 const crearProducto = async (req, res) => {
     try {
-        const { nombre, descripcion, precio, descuento, stock } = req.body;
+        const { nombre, descripcion, precio, descuento, stock, categoria } = req.body;
         let imagenUrl;
         if (req.file) {
             const b64 = req.file.buffer.toString('base64');
@@ -166,14 +196,23 @@ const crearProducto = async (req, res) => {
             });
         }
 
-        const categoriaSnapshot = req.body.categoria || req.body.categoriaSnapshot || undefined;
+        // Parsear categoría si viene como string (desde FormData)
+        let categoriaObj = undefined;
+        if (categoria) {
+            try {
+                categoriaObj = typeof categoria === 'string' ? JSON.parse(categoria) : categoria;
+            } catch (e) {
+                categoriaObj = { nombre: categoria, activa: true };
+            }
+        }
+
         const nuevoProducto = await Producto.create({
             nombre,
             descripcion,
             precio: precioNum,
             descuento: descuentoNum,
             stock: stockNum,
-            categoria: categoriaSnapshot,
+            categoria: categoriaObj,
             imagen: imagenUrl
         });
 
@@ -194,7 +233,7 @@ const crearProducto = async (req, res) => {
 const editarProducto = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, descripcion, precio, descuento, stock } = req.body;
+        const { nombre, descripcion, precio, descuento, stock, categoria } = req.body;
 
         const producto = await Producto.findById(id).exec();
 
@@ -260,14 +299,23 @@ const editarProducto = async (req, res) => {
             });
         }
 
-        const categoriaSnapshot = req.body.categoria || req.body.categoriaSnapshot || producto.categoria;
+        // Parsear categoría si viene como string
+        let categoriaObj = producto.categoria;
+        if (categoria) {
+            try {
+                categoriaObj = typeof categoria === 'string' ? JSON.parse(categoria) : categoria;
+            } catch (e) {
+                categoriaObj = { nombre: categoria, activa: true };
+            }
+        }
+
         const actualizado = await Producto.findByIdAndUpdate(id, {
             nombre,
             descripcion,
             precio: precioNum,
             descuento: descuentoNum,
             stock: stockNum,
-            categoria: categoriaSnapshot,
+            categoria: categoriaObj,
             imagen: imagenUrl
         }, { new: true }).exec();
 
@@ -316,12 +364,65 @@ const eliminarProducto = async (req, res) => {
     }
 };
 
+const actualizarCategoria = async (req, res) => {
+    try {
+        const { nombreAntiguo } = req.params;
+        const { nombre, descripcion } = req.body;
+
+        if (!nombre) {
+            return res.status(400).json({ ok: false, message: 'El nombre es obligatorio' });
+        }
+
+        // Actualizar todos los productos que tengan esta categoría
+        const resultado = await Producto.updateMany(
+            { 'categoria.nombre': nombreAntiguo },
+            { 
+                $set: { 
+                    'categoria.nombre': nombre,
+                    'categoria.descripcion': descripcion 
+                } 
+            }
+        ).exec();
+
+        res.json({ 
+            ok: true, 
+            message: 'Categoría actualizada globalmente', 
+            modificados: resultado.modifiedCount 
+        });
+    } catch (error) {
+        res.status(500).json({ ok: false, message: 'Error al actualizar categoría' });
+    }
+};
+
+const eliminarCategoria = async (req, res) => {
+    try {
+        const { nombre } = req.params;
+
+        // Eliminar la referencia de categoría en todos los productos
+        const resultado = await Producto.updateMany(
+            { 'categoria.nombre': nombre },
+            { $unset: { categoria: "" } }
+        ).exec();
+
+        res.json({ 
+            ok: true, 
+            message: 'Categoría eliminada globalmente', 
+            modificados: resultado.modifiedCount 
+        });
+    } catch (error) {
+        res.status(500).json({ ok: false, message: 'Error al eliminar categoría' });
+    }
+};
+
 module.exports = {
     buscarProductos,
     obtenerTodos,
     actualizarStock,
     obtenerStock,
+    obtenerCategorias,
     crearProducto,
-    eliminarProducto,
     editarProducto,
+    eliminarProducto,
+    actualizarCategoria,
+    eliminarCategoria
 };

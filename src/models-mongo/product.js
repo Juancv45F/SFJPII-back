@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const CategoriaEmbeddedSchema = new mongoose.Schema({
   _id: { type: mongoose.Schema.Types.ObjectId, required: true },
   nombre: { type: String, required: true },
+  descripcion: { type: String },
   activa: { type: Boolean, default: true }
 }, { _id: false });
 
