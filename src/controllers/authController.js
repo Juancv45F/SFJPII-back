@@ -1117,27 +1117,31 @@ function base64urlToBuffer(base64url) {
     return Buffer.from(b64 + pad, 'base64');
 }
 
-function getWebauthnConfig() {
+function getWebauthnConfig(req) {
     const rpName = process.env.WEBAUTHN_RP_NAME || 'SFJPII';
-    const origin = process.env.WEBAUTHN_ORIGIN || process.env.APP_ORIGIN || 'http://localhost:8100';
+    const allowedOriginsRaw = process.env.WEBAUTHN_ALLOWED_ORIGINS || process.env.WEBAUTHN_ORIGIN || process.env.APP_ORIGIN || 'http://localhost:8100';
+    const allowedOrigins = String(allowedOriginsRaw)
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+
+    const requestOrigin = String(req?.headers?.origin || '').trim();
+    const origin = requestOrigin && allowedOrigins.includes(requestOrigin) ? requestOrigin : (allowedOrigins[0] || 'http://localhost:8100');
+
     let rpID = process.env.WEBAUTHN_RP_ID;
-    if (!rpID) {
-        try {
-            rpID = new URL(origin).hostname;
-        } catch {
-            rpID = 'localhost';
-        }
-    }
+    if (!rpID) rpID = new URL(origin).hostname;
     const challengeSecret = process.env.WEBAUTHN_CHALLENGE_SECRET || process.env.JWT_SECRET;
     return { rpName, origin, rpID, challengeSecret };
 }
 
-function createWebauthnChallengeToken({ challenge, email, mode }) {
+function createWebauthnChallengeToken({ challenge, email, mode, origin, rpID }) {
     const { challengeSecret } = getWebauthnConfig();
     const payload = {
         typ: 'webauthn_challenge',
         mode,
         challenge,
+        origin,
+        rpID,
         email: email ? String(email).toLowerCase() : undefined
     };
     return jwt.sign(payload, challengeSecret, { expiresIn: process.env.WEBAUTHN_CHALLENGE_EXPIRES_IN || '5m' });
@@ -1161,7 +1165,7 @@ const webauthnBeginRegistration = async (req, res) => {
         if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
         if (!user.isVerified) return res.status(403).json({ message: 'Debes verificar tu correo primero.' });
 
-        const { rpName, rpID } = getWebauthnConfig();
+        const { rpName, rpID, origin } = getWebauthnConfig(req);
 
         const credentials = Array.isArray(user?.webauthn?.credentials) ? user.webauthn.credentials : [];
         const excludeCredentials = credentials.map((c) => ({
@@ -1189,7 +1193,7 @@ const webauthnBeginRegistration = async (req, res) => {
         user.webauthn.currentChallenge = options.challenge;
         await user.save();
 
-        const webauthnToken = createWebauthnChallengeToken({ challenge: options.challenge, email: user.email, mode: 'register' });
+        const webauthnToken = createWebauthnChallengeToken({ challenge: options.challenge, email: user.email, mode: 'register', origin, rpID });
         return res.json({ options, webauthnToken });
     } catch (error) {
         const logger = child();
@@ -1219,7 +1223,7 @@ const webauthnFinishRegistration = async (req, res) => {
             return res.status(400).json({ message: 'No hay un registro de passkey pendiente.' });
         }
 
-        const { origin, rpID } = getWebauthnConfig();
+        const { origin, rpID } = decoded?.origin && decoded?.rpID ? { origin: decoded.origin, rpID: decoded.rpID } : getWebauthnConfig(req);
         const expectedChallenge = String(user.webauthn.currentChallenge);
 
         const verification = await verifyRegistrationResponse({
@@ -1294,7 +1298,7 @@ const webauthnBeginLogin = async (req, res) => {
         email = sanitize(email);
         const normalizedEmail = isEmail(email) ? String(email).toLowerCase() : null;
 
-        const { rpID } = getWebauthnConfig();
+        const { rpID, origin } = getWebauthnConfig(req);
 
         let user = null;
         let allowCredentials = undefined;
@@ -1329,7 +1333,9 @@ const webauthnBeginLogin = async (req, res) => {
         const webauthnToken = createWebauthnChallengeToken({
             challenge: options.challenge,
             email: normalizedEmail || undefined,
-            mode: 'login'
+            mode: 'login',
+            origin,
+            rpID
         });
 
         return res.json({ options, webauthnToken });
@@ -1372,7 +1378,7 @@ const webauthnFinishLogin = async (req, res) => {
         const stored = creds.find(c => c.credentialID === credentialIdFromClient);
         if (!stored) return res.status(400).json({ message: 'Passkey no registrada.' });
 
-        const { origin, rpID } = getWebauthnConfig();
+        const { origin, rpID } = decoded?.origin && decoded?.rpID ? { origin: decoded.origin, rpID: decoded.rpID } : getWebauthnConfig(req);
         const webauthnCredential = {
             id: String(stored.credentialID),
             publicKey: base64urlToBuffer(stored.credentialPublicKey),
