@@ -467,6 +467,7 @@ module.exports = {
   updateUserRole,
   getRecoveryQuestionsStatus,
   upsertPushToken,
-  removePushToken 
+  removePushToken,
+  updateRecoveryQuestions
 }
 
