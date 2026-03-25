@@ -414,6 +414,46 @@ async function updateRecoveryQuestions(req, res) {
     return res.status(500).json({ message: 'Error al actualizar preguntas.' });
   }
 }
+async function upsertPushToken(req, res) {
+  try {
+    let { token, platform } = req.body || {};
+    token = sanitize(token);
+    platform = String(platform || 'android').toLowerCase();
+    if (!isNonEmpty(token)) return res.status(400).json({ message: 'Falta token' });
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    user.pushTokens = Array.isArray(user.pushTokens) ? user.pushTokens : [];
+    const idx = user.pushTokens.findIndex(t => t && t.token === token);
+    const now = new Date();
+    if (idx === -1) {
+      user.pushTokens.push({ token, platform, createdAt: now, lastSeenAt: now });
+    } else {
+      user.pushTokens[idx].platform = platform || user.pushTokens[idx].platform;
+      user.pushTokens[idx].lastSeenAt = now;
+      user.pushTokens[idx].revokedAt = undefined;
+    }
+    await user.save();
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error al registrar token push' });
+  }
+}
+
+async function removePushToken(req, res) {
+  try {
+    let { token } = req.body || {};
+    token = sanitize(token);
+    if (!isNonEmpty(token)) return res.status(400).json({ message: 'Falta token' });
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    user.pushTokens = (user.pushTokens || []).filter(t => t && t.token !== token);
+    await user.save();
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error al eliminar token push' });
+  }
+}
+
 
 module.exports = {
   getMe,
@@ -425,6 +465,8 @@ module.exports = {
   revokeSession,
   revokeOtherSessions,
   updateUserRole,
-    updateRecoveryQuestions,
-    getRecoveryQuestionsStatus
-};
+  getRecoveryQuestionsStatus,
+  upsertPushToken,
+  removePushToken 
+}
+

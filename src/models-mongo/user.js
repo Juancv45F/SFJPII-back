@@ -74,6 +74,13 @@ const schema = new mongoose.Schema({
     userAgent: { type: String },
     ip: { type: String }
   }],
+  pushTokens: [{
+    token: { type: String, required: true },
+    platform: { type: String, enum: ['android','ios','web','unknown'], default: 'android' },
+    createdAt: { type: Date, default: Date.now },
+    lastSeenAt: { type: Date, default: Date.now },
+    revokedAt: { type: Date }
+  }],
   ubicaciones: [UbicacionSchema],
   carrito: {
     items: [CarritoItemSchema]

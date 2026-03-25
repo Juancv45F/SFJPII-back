@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Pedido = require('../models-mongo/pedido');
 const Producto = require('../models-mongo/product');
 const User = require('../models-mongo/user');
+const axios = require('axios');
 
 
 const crearPedido = async (req, res) => {
@@ -291,6 +292,39 @@ const actualizarEstadoPedido = async (req, res) => {
                     pedidoId: String(pedido._id),
                     estado
                 });
+
+                // Enviar push FCM si hay tokens y hay clave configurada
+                try {
+                    const user = await User.findById(clienteId).select('pushTokens').exec();
+                    const serverKey = process.env.FCM_SERVER_KEY;
+                    if (user && Array.isArray(user.pushTokens) && serverKey) {
+                        const tokens = user.pushTokens.filter(t => !t.revokedAt).map(t => t.token);
+                        const notif = {
+                            title: 'Actualización de Pedido',
+                            body: mensajeCliente
+                        };
+                        // Enviar por lotes pequeños
+                        const chunkSize = 500;
+                        for (let i = 0; i < tokens.length; i += chunkSize) {
+                            const registration_ids = tokens.slice(i, i + chunkSize);
+                            await axios.post('https://fcm.googleapis.com/fcm/send', {
+                                registration_ids,
+                                notification: notif,
+                                data: {
+                                    pedidoId: String(pedido._id),
+                                    estado
+                                },
+                                priority: 'high'
+                            }, {
+                                headers: {
+                                    'Authorization': `key=${serverKey}`,
+                                    'Content-Type': 'application/json'
+                                },
+                                timeout: 8000
+                            }).catch(() => {});
+                        }
+                    }
+                } catch {}
             }
 
             // 3. Si el pedido fue cancelado por el cliente, notificar al staff

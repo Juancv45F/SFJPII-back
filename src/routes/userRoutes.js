@@ -11,7 +11,9 @@ const {
   revokeOtherSessions,
   updateUserRole,
   updateRecoveryQuestions,
-  getRecoveryQuestionsStatus
+  getRecoveryQuestionsStatus,
+  upsertPushToken,
+  removePushToken
 } = require('../controllers/userController');
 
 const router = Router();
@@ -31,5 +33,9 @@ router.put('/preferences', [validateToken], updatePreferences);
 router.get('/sessions', [validateToken], listSessions);
 router.post('/sessions/revoke', [validateToken], revokeSession);
 router.post('/sessions/revoke-others', [validateToken], revokeOtherSessions);
+
+// Push tokens
+router.put('/push-token', [validateToken], upsertPushToken);
+router.delete('/push-token', [validateToken], removePushToken);
 
 module.exports = router;
