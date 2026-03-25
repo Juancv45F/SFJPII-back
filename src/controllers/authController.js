@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { child } = require('../utils/logger');
 const { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } = require('@simplewebauthn/server');
+const speakeasy = require('speakeasy');
 
 const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 const isStrongPassword = (v) => v && v.length >= 8 && /[A-Z]/.test(v) && /\d/.test(v) && /[\W_]/.test(v);
@@ -619,12 +620,26 @@ const login = async (req, res) => {
         if (!validPass) return res.status(400).json({ message: 'Credenciales inválidas' });
 
         if (user?.mfa?.enabled) {
+            const method = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
+            if (method === 'totp' && user?.mfa?.totpSecret) {
+                const mfaToken = createMfaToken(user);
+                return res.json({
+                    message: 'Se requiere verificación MFA',
+                    mfaRequired: true,
+                    mfaMethod: 'totp',
+                    mfaToken,
+                    email: user.email
+                });
+            }
+
             const otp = Math.floor(100000 + Math.random() * 900000).toString();
             const otpSalt = await bcrypt.genSalt(10);
             const otpHash = await bcrypt.hash(otp, otpSalt);
             const expiresAt = new Date(Date.now() + (Number(process.env.MFA_OTP_TTL_MS) || 5 * 60 * 1000));
 
             user.mfa = user.mfa || {};
+            user.mfa.method = 'email';
+            user.mfa.channel = 'email';
             user.mfa.otpHash = otpHash;
             user.mfa.otpExpiresAt = expiresAt;
             user.mfa.otpAttempts = 0;
@@ -641,6 +656,7 @@ const login = async (req, res) => {
             return res.json({
                 message: 'Se requiere verificación MFA',
                 mfaRequired: true,
+                mfaMethod: 'email',
                 mfaToken,
                 email: user.email
             });
@@ -693,6 +709,10 @@ const resendMfaOtp = async (req, res) => {
         if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
         if (!user?.mfa?.enabled) {
             return res.status(400).json({ message: 'MFA no está habilitado para este usuario' });
+        }
+        const method = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
+        if (method === 'totp') {
+            return res.status(400).json({ message: 'El método TOTP no requiere reenvío' });
         }
 
         const waitSec = remainingCooldownSec(user?.mfa?.otpSentAt);
@@ -751,22 +771,45 @@ const verifyMfa = async (req, res) => {
             return res.status(400).json({ message: 'MFA no está habilitado para este usuario' });
         }
 
-        const now = new Date();
-        const otpExpiresAt = user?.mfa?.otpExpiresAt ? new Date(user.mfa.otpExpiresAt) : null;
-        if (!user?.mfa?.otpHash || !otpExpiresAt || otpExpiresAt.getTime() < now.getTime()) {
-            return res.status(400).json({ message: 'OTP expirado o no solicitado' });
-        }
         const maxAttempts = Number(process.env.MFA_OTP_MAX_ATTEMPTS) || 5;
         const attempts = Number(user?.mfa?.otpAttempts || 0);
         if (attempts >= maxAttempts) {
             return res.status(429).json({ message: 'Demasiados intentos' });
         }
 
-        const ok = await bcrypt.compare(String(otp), String(user.mfa.otpHash));
-        if (!ok) {
-            user.mfa.otpAttempts = attempts + 1;
-            await user.save();
-            return res.status(400).json({ message: 'OTP incorrecto' });
+        const method = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
+        if (method === 'totp') {
+            if (!isNonEmpty(user?.mfa?.totpSecret)) {
+                return res.status(400).json({ message: 'TOTP no configurado' });
+            }
+            const token = String(otp).replace(/\D/g, '');
+            if (token.length !== 6 && token.length !== 8) {
+                return res.status(400).json({ message: 'El código debe tener 6 u 8 dígitos.' });
+            }
+            const ok = speakeasy.totp.verify({
+                secret: String(user.mfa.totpSecret),
+                encoding: 'base32',
+                token,
+                window: Number(process.env.TOTP_WINDOW || 2)
+            });
+            if (!ok) {
+                user.mfa.otpAttempts = attempts + 1;
+                await user.save();
+                return res.status(400).json({ message: 'Código incorrecto' });
+            }
+        } else {
+            const now = new Date();
+            const otpExpiresAt = user?.mfa?.otpExpiresAt ? new Date(user.mfa.otpExpiresAt) : null;
+            if (!user?.mfa?.otpHash || !otpExpiresAt || otpExpiresAt.getTime() < now.getTime()) {
+                return res.status(400).json({ message: 'OTP expirado o no solicitado' });
+            }
+
+            const ok = await bcrypt.compare(String(otp), String(user.mfa.otpHash));
+            if (!ok) {
+                user.mfa.otpAttempts = attempts + 1;
+                await user.save();
+                return res.status(400).json({ message: 'OTP incorrecto' });
+            }
         }
 
         user.mfa.otpHash = undefined;

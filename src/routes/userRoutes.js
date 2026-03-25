@@ -12,6 +12,8 @@ const {
   updateUserRole,
   updateRecoveryQuestions,
   getRecoveryQuestionsStatus,
+  beginTotpSetup,
+  verifyTotpSetup,
   upsertPushToken,
   removePushToken
 } = require('../controllers/userController');
@@ -22,6 +24,8 @@ router.get('/me', [validateToken], getMe);
 router.put('/:id/role', [validateToken, authorizeRoles('admin')], updateUserRole);
 router.put('/password', [validateToken], changePassword);
 router.put('/mfa', [validateToken], updateMfa);
+router.post('/mfa/totp/setup', [validateToken], beginTotpSetup);
+router.post('/mfa/totp/verify', [validateToken], verifyTotpSetup);
 
 // Preguntas de seguridad
 router.get('/recovery/questions', [validateToken], getRecoveryQuestionsStatus);

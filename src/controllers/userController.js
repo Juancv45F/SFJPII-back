@@ -3,6 +3,8 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models-mongo/user');
 const { child } = require('../utils/logger');
+const speakeasy = require('speakeasy');
+const qrcode = require('qrcode');
 
 const sanitize = (v) => typeof v === 'string' ? v.trim() : v;
 const isNonEmpty = (v) => typeof v === 'string' ? v.trim().length > 0 : v !== undefined && v !== null;
@@ -84,7 +86,9 @@ async function getMe(req, res) {
         rol: user.role || 'cliente',
         mfa: {
           enabled: !!user?.mfa?.enabled,
-          channel: user?.mfa?.channel || 'email'
+          channel: user?.mfa?.channel || 'email',
+          method: user?.mfa?.method || user?.mfa?.channel || 'email',
+          totpConfigured: !!user?.mfa?.totpSecret
         },
         preferences: {
           theme: user?.preferences?.theme || 'light',
@@ -161,23 +165,107 @@ async function updateMfa(req, res) {
 
     user.mfa = user.mfa || {};
     user.mfa.enabled = enable;
-    if (isNonEmpty(channel)) user.mfa.channel = String(channel);
+    if (isNonEmpty(channel)) {
+      const next = String(channel).toLowerCase();
+      if (next === 'email' || next === 'totp') {
+        user.mfa.channel = next;
+        user.mfa.method = next;
+      } else {
+        user.mfa.channel = String(channel);
+      }
+    }
+    const method = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
+    if (enable && method === 'totp') {
+      if (!isNonEmpty(user?.mfa?.totpSecret)) {
+        return res.status(400).json({ message: 'Configura Google Authenticator antes de activar TOTP.' });
+      }
+    }
     if (!enable) {
       user.mfa.otpHash = undefined;
       user.mfa.otpExpiresAt = undefined;
       user.mfa.otpAttempts = 0;
       user.mfa.otpSentAt = undefined;
+      user.mfa.totpTempSecret = undefined;
     }
 
     await user.save();
     return res.json({
       message: enable ? 'MFA activado' : 'MFA desactivado',
-      mfa: { enabled: !!user?.mfa?.enabled, channel: user?.mfa?.channel || 'email' }
+      mfa: { enabled: !!user?.mfa?.enabled, channel: user?.mfa?.channel || 'email', method: user?.mfa?.method || user?.mfa?.channel || 'email', totpConfigured: !!user?.mfa?.totpSecret }
     });
   } catch (error) {
     const logger = child();
     logger.error('user_mfa_update_error', { context: { message: error.message, stack: error.stack } });
     return res.status(500).json({ message: 'Error al actualizar MFA' });
+  }
+}
+
+async function beginTotpSetup(req, res) {
+  try {
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    if (!user.isVerified) return res.status(400).json({ message: 'Debes verificar tu correo primero.' });
+
+    const secret = speakeasy.generateSecret({
+      length: 20,
+      name: `SFJPII (${String(user.email).toLowerCase()})`
+    });
+    const base32 = String(secret.base32 || '');
+    const otpauthUrl = String(secret.otpauth_url || '');
+    if (!base32 || !otpauthUrl) return res.status(500).json({ message: 'No se pudo generar el secreto TOTP.' });
+
+    user.mfa = user.mfa || {};
+    user.mfa.totpTempSecret = base32;
+    user.mfa.method = 'totp';
+    user.mfa.channel = 'totp';
+    await user.save();
+
+    const qrDataUrl = await qrcode.toDataURL(otpauthUrl, { margin: 1, width: 220 });
+    return res.json({ otpauthUrl, qrDataUrl, secret: base32 });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error al iniciar configuración TOTP' });
+  }
+}
+
+async function verifyTotpSetup(req, res) {
+  try {
+    let { code } = req.body || {};
+    code = sanitize(code);
+    if (!isNonEmpty(code)) return res.status(400).json({ message: 'Falta código' });
+    const token = String(code).replace(/\D/g, '');
+    if (token.length !== 6 && token.length !== 8) {
+      return res.status(400).json({ message: 'El código debe tener 6 u 8 dígitos.' });
+    }
+
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    const temp = user?.mfa?.totpTempSecret;
+    if (!isNonEmpty(temp)) return res.status(400).json({ message: 'No hay configuración TOTP pendiente.' });
+
+    const ok = speakeasy.totp.verify({
+      secret: String(temp),
+      encoding: 'base32',
+      token,
+      window: Number(process.env.TOTP_WINDOW || 2)
+    });
+    if (!ok) return res.status(400).json({ message: 'Código incorrecto.' });
+
+    user.mfa = user.mfa || {};
+    user.mfa.totpSecret = String(temp);
+    user.mfa.totpTempSecret = undefined;
+    user.mfa.totpVerifiedAt = new Date();
+    user.mfa.enabled = true;
+    user.mfa.method = 'totp';
+    user.mfa.channel = 'totp';
+    user.mfa.otpAttempts = 0;
+    user.mfa.otpHash = undefined;
+    user.mfa.otpExpiresAt = undefined;
+    user.mfa.otpSentAt = undefined;
+    await user.save();
+
+    return res.json({ message: 'Google Authenticator configurado y MFA activado.' });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error al verificar TOTP' });
   }
 }
 
@@ -459,6 +547,8 @@ module.exports = {
   getMe,
   changePassword,
   updateMfa,
+  beginTotpSetup,
+  verifyTotpSetup,
   getPreferences,
   updatePreferences,
   listSessions,
@@ -470,4 +560,3 @@ module.exports = {
   removePushToken,
   updateRecoveryQuestions
 }
-

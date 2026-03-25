@@ -54,10 +54,14 @@ const schema = new mongoose.Schema({
   mfa: {
     enabled: { type: Boolean, default: false },
     channel: { type: String, default: 'email' },
+    method: { type: String, enum: ['email', 'totp'], default: 'email' },
     otpHash: { type: String },
     otpExpiresAt: { type: Date },
     otpAttempts: { type: Number, default: 0 },
-    otpSentAt: { type: Date }
+    otpSentAt: { type: Date },
+    totpSecret: { type: String },
+    totpTempSecret: { type: String },
+    totpVerifiedAt: { type: Date }
   },
   preferences: {
     theme: { type: String, default: 'light' },
