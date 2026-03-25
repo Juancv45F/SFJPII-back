@@ -1173,7 +1173,7 @@ const webauthnBeginRegistration = async (req, res) => {
         const options = await generateRegistrationOptions({
             rpName,
             rpID,
-            userID: String(user._id),
+            userID: Buffer.from(String(user._id)),
             userName: String(user.email).toLowerCase(),
             userDisplayName: `${user.nombre || ''} ${user.apellido || ''}`.trim() || String(user.email).toLowerCase(),
             timeout: Number(process.env.WEBAUTHN_TIMEOUT_MS) || 60_000,
