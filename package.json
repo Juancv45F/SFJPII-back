@@ -34,6 +34,7 @@
     "pg": "^8.18.0",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.7",
+    "@simplewebauthn/server": "^13.1.0",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {

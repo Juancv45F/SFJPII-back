@@ -27,6 +27,16 @@ const schema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   role: { type: String, enum: ['admin', 'editor', 'cliente'], default: 'cliente' },
   
+  webauthn: {
+    currentChallenge: { type: String },
+    credentials: [{
+      credentialID: { type: String, required: true },
+      credentialPublicKey: { type: String, required: true },
+      counter: { type: Number, default: 0 },
+      transports: [{ type: String }]
+    }]
+  },
+
   // Recuperación de Contraseña
   recovery: {
     tokenHash: { type: String },

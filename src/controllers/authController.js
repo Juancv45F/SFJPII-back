@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { child } = require('../utils/logger');
+const { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } = require('@simplewebauthn/server');
 
 const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 const isStrongPassword = (v) => v && v.length >= 8 && /[A-Z]/.test(v) && /\d/.test(v) && /[\W_]/.test(v);
@@ -858,7 +859,15 @@ const refresh = async (req, res) => {
         });
 
         const token = createAccessToken(user);
-        return res.json({ token, refreshToken: newRefreshToken });
+        return res.json({
+            token,
+            refreshToken: newRefreshToken,
+            user: {
+                id: String(user._id),
+                nombre: user.nombre,
+                rol: user.role || 'cliente'
+            }
+        });
     } catch (error) {
         const logger = child();
         logger.error('refresh_error', { context: { message: error.message, stack: error.stack } });
@@ -1091,6 +1100,375 @@ const validateSsoToken = async (req, res) => {
     }
 };
 
+function bufferToBase64url(buffer) {
+    if (buffer === undefined || buffer === null) {
+        throw new TypeError('buffer_to_base64url_invalid_input');
+    }
+    if (typeof buffer === 'string') {
+        return buffer;
+    }
+    const b64 = Buffer.from(buffer).toString('base64');
+    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64urlToBuffer(base64url) {
+    const b64 = String(base64url || '').replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
+    return Buffer.from(b64 + pad, 'base64');
+}
+
+function getWebauthnConfig() {
+    const rpName = process.env.WEBAUTHN_RP_NAME || 'SFJPII';
+    const origin = process.env.WEBAUTHN_ORIGIN || process.env.APP_ORIGIN || 'http://localhost:8100';
+    let rpID = process.env.WEBAUTHN_RP_ID;
+    if (!rpID) {
+        try {
+            rpID = new URL(origin).hostname;
+        } catch {
+            rpID = 'localhost';
+        }
+    }
+    const challengeSecret = process.env.WEBAUTHN_CHALLENGE_SECRET || process.env.JWT_SECRET;
+    return { rpName, origin, rpID, challengeSecret };
+}
+
+function createWebauthnChallengeToken({ challenge, email, mode }) {
+    const { challengeSecret } = getWebauthnConfig();
+    const payload = {
+        typ: 'webauthn_challenge',
+        mode,
+        challenge,
+        email: email ? String(email).toLowerCase() : undefined
+    };
+    return jwt.sign(payload, challengeSecret, { expiresIn: process.env.WEBAUTHN_CHALLENGE_EXPIRES_IN || '5m' });
+}
+
+function verifyWebauthnChallengeToken(token) {
+    const { challengeSecret } = getWebauthnConfig();
+    const decoded = jwt.verify(token, challengeSecret);
+    if (!decoded || decoded.typ !== 'webauthn_challenge' || !decoded.challenge) {
+        throw new Error('webauthn_challenge_invalid');
+    }
+    return decoded;
+}
+
+const webauthnBeginRegistration = async (req, res) => {
+    try {
+        const uid = String(req.uid || '');
+        if (!uid) return res.status(401).json({ message: 'No autorizado' });
+
+        const user = await User.findById(uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+        if (!user.isVerified) return res.status(403).json({ message: 'Debes verificar tu correo primero.' });
+
+        const { rpName, rpID } = getWebauthnConfig();
+
+        const credentials = Array.isArray(user?.webauthn?.credentials) ? user.webauthn.credentials : [];
+        const excludeCredentials = credentials.map((c) => ({
+            id: String(c.credentialID),
+            type: 'public-key',
+            transports: Array.isArray(c.transports) ? c.transports : undefined
+        }));
+
+        const options = await generateRegistrationOptions({
+            rpName,
+            rpID,
+            userID: String(user._id),
+            userName: String(user.email).toLowerCase(),
+            userDisplayName: `${user.nombre || ''} ${user.apellido || ''}`.trim() || String(user.email).toLowerCase(),
+            timeout: Number(process.env.WEBAUTHN_TIMEOUT_MS) || 60_000,
+            attestationType: 'none',
+            excludeCredentials,
+            authenticatorSelection: {
+                userVerification: 'required',
+                residentKey: 'preferred'
+            }
+        });
+
+        user.webauthn = user.webauthn || {};
+        user.webauthn.currentChallenge = options.challenge;
+        await user.save();
+
+        const webauthnToken = createWebauthnChallengeToken({ challenge: options.challenge, email: user.email, mode: 'register' });
+        return res.json({ options, webauthnToken });
+    } catch (error) {
+        const logger = child();
+        logger.error('webauthn_begin_registration_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(500).json({ message: 'No se pudo iniciar el registro de passkey' });
+    }
+};
+
+const webauthnFinishRegistration = async (req, res) => {
+    try {
+        const uid = String(req.uid || '');
+        if (!uid) return res.status(401).json({ message: 'No autorizado' });
+
+        const { credential, webauthnToken } = req.body || {};
+        if (!credential || !webauthnToken) {
+            return res.status(400).json({ message: 'Datos inválidos.' });
+        }
+
+        const decoded = verifyWebauthnChallengeToken(webauthnToken);
+        if (decoded.mode !== 'register') {
+            return res.status(400).json({ message: 'Token inválido.' });
+        }
+
+        const user = await User.findById(uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+        if (!user?.webauthn?.currentChallenge) {
+            return res.status(400).json({ message: 'No hay un registro de passkey pendiente.' });
+        }
+
+        const { origin, rpID } = getWebauthnConfig();
+        const expectedChallenge = String(user.webauthn.currentChallenge);
+
+        const verification = await verifyRegistrationResponse({
+            response: credential,
+            expectedChallenge,
+            expectedOrigin: origin,
+            expectedRPID: rpID,
+            requireUserVerification: true
+        });
+
+        if (!verification.verified || !verification.registrationInfo) {
+            return res.status(400).json({ message: 'No se pudo verificar la passkey.' });
+        }
+
+        const registrationInfo = verification.registrationInfo;
+        const credentialIDRaw =
+            registrationInfo.credentialID ??
+            registrationInfo.credentialId ??
+            registrationInfo.credential?.id ??
+            registrationInfo.credential?.credentialID ??
+            registrationInfo.credential?.credentialId ??
+            registrationInfo.id;
+        const credentialPublicKeyRaw =
+            registrationInfo.credentialPublicKey ??
+            registrationInfo.credential?.publicKey ??
+            registrationInfo.credential?.credentialPublicKey ??
+            registrationInfo.credential?.credentialPublicKeyPem ??
+            registrationInfo.publicKey;
+        const counterRaw = registrationInfo.counter ?? registrationInfo.credential?.counter ?? 0;
+
+        if (!credentialIDRaw || !credentialPublicKeyRaw) {
+            return res.status(400).json({ message: 'Respuesta de passkey incompleta.' });
+        }
+
+        const credentialIDb64 = bufferToBase64url(credentialIDRaw);
+        const credentialPublicKeyB64 = bufferToBase64url(credentialPublicKeyRaw);
+
+        user.webauthn.credentials = Array.isArray(user.webauthn.credentials) ? user.webauthn.credentials : [];
+        const exists = user.webauthn.credentials.some(c => c.credentialID === credentialIDb64);
+        if (!exists) {
+            const transportsRaw = credential?.response?.transports ?? credential?.transports;
+            const transports = Array.isArray(transportsRaw)
+                ? transportsRaw
+                : (transportsRaw && typeof transportsRaw === 'object')
+                    ? Object.values(transportsRaw).map(v => String(v))
+                    : (typeof transportsRaw === 'string')
+                        ? [transportsRaw]
+                        : [];
+
+            user.webauthn.credentials.push({
+                credentialID: credentialIDb64,
+                credentialPublicKey: credentialPublicKeyB64,
+                counter: Number(counterRaw) || 0,
+                transports
+            });
+        }
+
+        user.webauthn.currentChallenge = undefined;
+        await user.save();
+
+        return res.json({ message: 'Passkey registrada correctamente' });
+    } catch (error) {
+        const logger = child();
+        logger.error('webauthn_finish_registration_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(500).json({ message: 'No se pudo finalizar el registro de passkey' });
+    }
+};
+
+const webauthnBeginLogin = async (req, res) => {
+    try {
+        let { email } = req.body || {};
+        email = sanitize(email);
+        const normalizedEmail = isEmail(email) ? String(email).toLowerCase() : null;
+
+        const { rpID } = getWebauthnConfig();
+
+        let user = null;
+        let allowCredentials = undefined;
+        if (normalizedEmail) {
+            user = await User.findOne({ email: normalizedEmail }).exec();
+            if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+            if (!user.isVerified) return res.status(403).json({ message: 'Debes verificar tu correo primero.' });
+
+            const creds = Array.isArray(user?.webauthn?.credentials) ? user.webauthn.credentials : [];
+            if (!creds.length) return res.status(400).json({ message: 'Este usuario no tiene passkeys registradas.' });
+
+            allowCredentials = creds.map(c => ({
+                id: String(c.credentialID),
+                type: 'public-key',
+                transports: Array.isArray(c.transports) ? c.transports : undefined
+            }));
+        }
+
+        const options = await generateAuthenticationOptions({
+            rpID,
+            allowCredentials,
+            timeout: Number(process.env.WEBAUTHN_TIMEOUT_MS) || 60_000,
+            userVerification: 'required'
+        });
+
+        if (user) {
+            user.webauthn = user.webauthn || {};
+            user.webauthn.currentChallenge = options.challenge;
+            await user.save();
+        }
+
+        const webauthnToken = createWebauthnChallengeToken({
+            challenge: options.challenge,
+            email: normalizedEmail || undefined,
+            mode: 'login'
+        });
+
+        return res.json({ options, webauthnToken });
+    } catch (error) {
+        const logger = child();
+        logger.error('webauthn_begin_login_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(500).json({ message: 'No se pudo iniciar el login con passkey' });
+    }
+};
+
+const webauthnFinishLogin = async (req, res) => {
+    try {
+        const { credential, webauthnToken } = req.body || {};
+        if (!credential || !webauthnToken) {
+            return res.status(400).json({ message: 'Datos inválidos.' });
+        }
+
+        const decoded = verifyWebauthnChallengeToken(webauthnToken);
+        if (decoded.mode !== 'login') {
+            return res.status(400).json({ message: 'Token inválido.' });
+        }
+
+        const expectedChallenge = String(decoded.challenge);
+        const normalizedEmail = decoded.email ? String(decoded.email).toLowerCase() : null;
+        const credentialIdFromClient = credential?.id ? String(credential.id) : null;
+        if (!credentialIdFromClient) {
+            return res.status(400).json({ message: 'Credencial inválida.' });
+        }
+
+        let user;
+        if (normalizedEmail) {
+            user = await User.findOne({ email: normalizedEmail }).exec();
+        } else {
+            user = await User.findOne({ 'webauthn.credentials.credentialID': credentialIdFromClient }).exec();
+        }
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+        if (!user.isVerified) return res.status(403).json({ message: 'Debes verificar tu correo primero.' });
+
+        const creds = Array.isArray(user?.webauthn?.credentials) ? user.webauthn.credentials : [];
+        const stored = creds.find(c => c.credentialID === credentialIdFromClient);
+        if (!stored) return res.status(400).json({ message: 'Passkey no registrada.' });
+
+        const { origin, rpID } = getWebauthnConfig();
+        const webauthnCredential = {
+            id: String(stored.credentialID),
+            publicKey: base64urlToBuffer(stored.credentialPublicKey),
+            counter: Number(stored.counter) || 0,
+            transports: Array.isArray(stored.transports) ? stored.transports : undefined
+        };
+
+        const verification = await verifyAuthenticationResponse({
+            response: credential,
+            expectedChallenge,
+            expectedOrigin: origin,
+            expectedRPID: rpID,
+            credential: webauthnCredential,
+            requireUserVerification: true
+        });
+
+        if (!verification.verified || !verification.authenticationInfo) {
+            return res.status(400).json({ message: 'No se pudo verificar la passkey.' });
+        }
+
+        stored.counter = Number(verification.authenticationInfo.newCounter) || stored.counter;
+        user.webauthn.currentChallenge = undefined;
+        await user.save();
+
+        const token = createAccessToken(user);
+        const refreshToken = createRefreshToken(user);
+        await persistRefreshToken({ user, refreshToken, req });
+
+        return res.json({
+            message: 'Bienvenido',
+            token,
+            refreshToken,
+            user: {
+                id: String(user._id),
+                nombre: user.nombre,
+                rol: user.role || 'cliente'
+            }
+        });
+    } catch (error) {
+        const logger = child();
+        logger.error('webauthn_finish_login_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(500).json({ message: 'No se pudo finalizar el login con passkey' });
+    }
+};
+
+const webauthnListCredentials = async (req, res) => {
+    try {
+        const uid = String(req.uid || '');
+        if (!uid) return res.status(401).json({ message: 'No autorizado' });
+
+        const user = await User.findById(uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+        const creds = Array.isArray(user?.webauthn?.credentials) ? user.webauthn.credentials : [];
+        return res.json({
+            credentials: creds.map(c => ({
+                credentialID: c.credentialID,
+                transports: Array.isArray(c.transports) ? c.transports : []
+            }))
+        });
+    } catch (error) {
+        const logger = child();
+        logger.error('webauthn_list_credentials_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(500).json({ message: 'No se pudieron listar las passkeys' });
+    }
+};
+
+const webauthnDeleteCredentials = async (req, res) => {
+    try {
+        const uid = String(req.uid || '');
+        if (!uid) return res.status(401).json({ message: 'No autorizado' });
+
+        let { credentialID } = req.body || {};
+        credentialID = sanitize(credentialID);
+
+        const user = await User.findById(uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+        user.webauthn = user.webauthn || {};
+        const creds = Array.isArray(user.webauthn.credentials) ? user.webauthn.credentials : [];
+
+        if (credentialID) {
+            user.webauthn.credentials = creds.filter(c => c.credentialID !== String(credentialID));
+        } else {
+            user.webauthn.credentials = [];
+        }
+        await user.save();
+
+        return res.json({ message: 'Passkeys eliminadas' });
+    } catch (error) {
+        const logger = child();
+        logger.error('webauthn_delete_credentials_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(500).json({ message: 'No se pudieron eliminar las passkeys' });
+    }
+};
+
 module.exports = {
     register,
     verifyCode,
@@ -1101,6 +1479,12 @@ module.exports = {
     refresh,
     generateSsoToken,
     validateSsoToken,
+    webauthnBeginRegistration,
+    webauthnFinishRegistration,
+    webauthnBeginLogin,
+    webauthnFinishLogin,
+    webauthnListCredentials,
+    webauthnDeleteCredentials,
     requestPasswordRecovery,
     verifyRecoveryStep,
     resetPassword
