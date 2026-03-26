@@ -5,6 +5,96 @@ const User = require('../models-mongo/user');
 const axios = require('axios');
 
 
+async function sendFcmToTokens({ serverKey, tokens, notification, data }) {
+    const cleanTokens = Array.from(new Set((tokens || []).filter(Boolean).map(t => String(t))));
+    if (!serverKey || !cleanTokens.length) return { invalidTokens: [], success: 0, failure: 0 };
+
+    const chunkSize = 500;
+    const invalidTokens = [];
+    let success = 0;
+    let failure = 0;
+
+    for (let i = 0; i < cleanTokens.length; i += chunkSize) {
+        const registration_ids = cleanTokens.slice(i, i + chunkSize);
+        try {
+            const resp = await axios.post('https://fcm.googleapis.com/fcm/send', {
+                registration_ids,
+                notification,
+                data,
+                priority: 'high'
+            }, {
+                headers: {
+                    'Authorization': `key=${serverKey}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 8000
+            });
+
+            const results = Array.isArray(resp?.data?.results) ? resp.data.results : [];
+            success += Number(resp?.data?.success || 0);
+            failure += Number(resp?.data?.failure || 0);
+            for (let j = 0; j < results.length; j += 1) {
+                const r = results[j] || {};
+                const err = r.error;
+                if (err === 'NotRegistered' || err === 'InvalidRegistration' || err === 'MissingRegistration') {
+                    invalidTokens.push(registration_ids[j]);
+                }
+            }
+        } catch {
+            failure += registration_ids.length;
+        }
+    }
+
+    return { invalidTokens, success, failure };
+}
+
+async function revokeUserTokens(userId, tokens) {
+    const invalid = Array.from(new Set((tokens || []).filter(Boolean).map(t => String(t))));
+    if (!invalid.length) return;
+    const now = new Date();
+    await User.updateOne(
+        { _id: userId },
+        { $set: { 'pushTokens.$[t].revokedAt': now } },
+        { arrayFilters: [{ 't.token': { $in: invalid } }] }
+    ).exec();
+}
+
+async function sendPushToUser({ userId, title, body, data }) {
+    const serverKey = process.env.FCM_SERVER_KEY;
+    if (!serverKey) return;
+    const user = await User.findById(String(userId)).select('pushTokens').exec();
+    if (!user || !Array.isArray(user.pushTokens)) return;
+    const tokens = user.pushTokens.filter(t => t && !t.revokedAt).map(t => t.token);
+    const result = await sendFcmToTokens({
+        serverKey,
+        tokens,
+        notification: { title, body },
+        data: data || {}
+    });
+    if (result.invalidTokens.length) {
+        await revokeUserTokens(String(userId), result.invalidTokens);
+    }
+}
+
+async function sendPushToAdmins({ title, body, data }) {
+    const serverKey = process.env.FCM_SERVER_KEY;
+    if (!serverKey) return;
+    const admins = await User.find({ role: 'admin' }).select('pushTokens').exec();
+    if (!Array.isArray(admins) || !admins.length) return;
+    for (const admin of admins) {
+        const tokens = Array.isArray(admin.pushTokens) ? admin.pushTokens.filter(t => t && !t.revokedAt).map(t => t.token) : [];
+        const result = await sendFcmToTokens({
+            serverKey,
+            tokens,
+            notification: { title, body },
+            data: data || {}
+        });
+        if (result.invalidTokens.length) {
+            await revokeUserTokens(String(admin._id), result.invalidTokens);
+        }
+    }
+}
+
 const crearPedido = async (req, res) => {
     const session = await mongoose.startSession();
     try {
@@ -80,6 +170,9 @@ const crearPedido = async (req, res) => {
         const io = req.app.get('socketio');
         const items = [];
         let total = 0;
+        let savedPedidoId = '';
+        let clienteNombre = '';
+        let direccionTexto = '';
 
         await session.withTransaction(async () => {
             for (const item of productos) {
@@ -118,6 +211,9 @@ const crearPedido = async (req, res) => {
             }], { session });
 
             const saved = nuevoPedido[0];
+            savedPedidoId = String(saved._id);
+            clienteNombre = `${usuario.nombre} ${usuario.apellido}`.trim();
+            direccionTexto = `${ubicacionSnap.calle} #${ubicacionSnap.numero}, ${ubicacionSnap.alias || ''}`.trim();
 
             if (io) {
                 for (const it of items) {
@@ -129,9 +225,9 @@ const crearPedido = async (req, res) => {
                 }
                 const notificacionData = {
                     mensaje: '¡Nuevo pedido recibido!',
-                    pedidoId: String(saved._id),
-                    cliente: `${usuario.nombre} ${usuario.apellido}`,
-                    direccion: `${ubicacionSnap.calle} #${ubicacionSnap.numero}, ${ubicacionSnap.alias || ''}`.trim(),
+                    pedidoId: savedPedidoId,
+                    cliente: clienteNombre,
+                    direccion: direccionTexto,
                     total,
                     productos: items.map(i => ({ nombre: i.nombre, cantidad: i.cantidad })),
                     hora: new Date()
@@ -149,6 +245,20 @@ const crearPedido = async (req, res) => {
                 });
             }
         });
+
+        if (savedPedidoId) {
+            await sendPushToUser({
+                userId,
+                title: 'Pedido creado',
+                body: 'Tu pedido fue recibido y está en estado pendiente.',
+                data: { pedidoId: savedPedidoId, tipo: 'pedido_creado' }
+            });
+            await sendPushToAdmins({
+                title: 'Nuevo pedido',
+                body: `${clienteNombre || 'Cliente'} creó un pedido.`,
+                data: { pedidoId: savedPedidoId, tipo: 'nuevo_pedido', cliente: clienteNombre, direccion: direccionTexto, total }
+            });
+        }
 
         res.status(201).json({
             ok: true,
@@ -292,39 +402,6 @@ const actualizarEstadoPedido = async (req, res) => {
                     pedidoId: String(pedido._id),
                     estado
                 });
-
-                // Enviar push FCM si hay tokens y hay clave configurada
-                try {
-                    const user = await User.findById(clienteId).select('pushTokens').exec();
-                    const serverKey = process.env.FCM_SERVER_KEY;
-                    if (user && Array.isArray(user.pushTokens) && serverKey) {
-                        const tokens = user.pushTokens.filter(t => !t.revokedAt).map(t => t.token);
-                        const notif = {
-                            title: 'Actualización de Pedido',
-                            body: mensajeCliente
-                        };
-                        // Enviar por lotes pequeños
-                        const chunkSize = 500;
-                        for (let i = 0; i < tokens.length; i += chunkSize) {
-                            const registration_ids = tokens.slice(i, i + chunkSize);
-                            await axios.post('https://fcm.googleapis.com/fcm/send', {
-                                registration_ids,
-                                notification: notif,
-                                data: {
-                                    pedidoId: String(pedido._id),
-                                    estado
-                                },
-                                priority: 'high'
-                            }, {
-                                headers: {
-                                    'Authorization': `key=${serverKey}`,
-                                    'Content-Type': 'application/json'
-                                },
-                                timeout: 8000
-                            }).catch(() => {});
-                        }
-                    }
-                } catch {}
             }
 
             // 3. Si el pedido fue cancelado por el cliente, notificar al staff
@@ -338,6 +415,24 @@ const actualizarEstadoPedido = async (req, res) => {
                     total: pedido.total,
                     hora: new Date(),
                     tipo: 'cancelacion'
+                });
+            }
+        }
+
+        const clienteId = String(pedido.userId?._id || pedido.userId);
+        if (estado) {
+            let mensajeCliente = '';
+            switch(estado) {
+                case 'enviado': mensajeCliente = 'Tu pedido está en camino'; break;
+                case 'entregado': mensajeCliente = 'Tu pedido ha sido entregado'; break;
+                case 'cancelado': mensajeCliente = 'Tu pedido ha sido cancelado'; break;
+            }
+            if (mensajeCliente) {
+                await sendPushToUser({
+                    userId: clienteId,
+                    title: 'Actualización de Pedido',
+                    body: mensajeCliente,
+                    data: { pedidoId: String(pedido._id), estado, tipo: 'pedido_actualizado' }
                 });
             }
         }
