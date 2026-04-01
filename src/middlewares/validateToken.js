@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
+const User = require('../models-mongo/user');
 
-const validateToken = (req, res, next) => {
+const validateToken = async (req, res, next) => {
     // Obtener el token del encabezado (Header)
     // Se espera que venga así: "x-token": "eyJhbGciOiJIUz..."
     const fromXToken = req.header('x-token');
@@ -24,6 +25,34 @@ const validateToken = (req, res, next) => {
         req.uid = uid;
         req.rol = rol;
 
+        const user = await User.findById(String(uid)).select('role access').exec();
+        if (!user) {
+            return res.status(401).json({ message: 'Token no válido' });
+        }
+
+        const status = String(user?.access?.status || 'active').toLowerCase();
+        const suspendedUntil = user?.access?.suspendedUntil ? new Date(user.access.suspendedUntil) : null;
+        const disabledAt = user?.access?.disabledAt ? new Date(user.access.disabledAt) : null;
+
+        if (status === 'disabled' || disabledAt) {
+            return res.status(403).json({ message: 'Tu cuenta está deshabilitada' });
+        }
+
+        if (status === 'suspended') {
+            if (suspendedUntil && suspendedUntil.getTime() > Date.now()) {
+                return res.status(403).json({
+                    message: 'Tu cuenta está suspendida temporalmente',
+                    suspendedUntil
+                });
+            }
+            user.access = user.access || {};
+            user.access.status = 'active';
+            user.access.suspendedUntil = undefined;
+            await user.save();
+        }
+
+        req.rol = user.role;
+
         next(); // ¡Pase usted!
 
     } catch (error) {
@@ -42,6 +71,7 @@ const authorizeRoles = (...allowedRoles) => {
         if (!role) {
             return res.status(403).json({ message: 'No tienes permisos para realizar esta acción' });
         }
+        if (role === 'super_admin') return next();
         if (normalizedAllowed.length === 0) return next();
         if (!normalizedAllowed.includes(role)) {
             return res.status(403).json({ message: 'No tienes permisos para realizar esta acción' });

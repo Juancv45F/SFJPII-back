@@ -21,7 +21,7 @@ const {
 const router = Router();
 
 router.get('/me', [validateToken], getMe);
-router.put('/:id/role', [validateToken, authorizeRoles('admin')], updateUserRole);
+router.put('/:id/role', [validateToken, authorizeRoles('admin', 'super_admin')], updateUserRole);
 router.put('/password', [validateToken], changePassword);
 router.put('/mfa', [validateToken], updateMfa);
 router.post('/mfa/totp/setup', [validateToken], beginTotpSetup);

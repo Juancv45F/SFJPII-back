@@ -3,6 +3,11 @@ require('dotenv').config();
 
 let connected = false;
 
+if (process.env.NODE_ENV === 'test') {
+  mongoose.set('bufferCommands', false);
+  mongoose.set('bufferTimeoutMS', 0);
+}
+
 async function connect() {
   if (connected) return mongoose.connection;
   const uri = process.env.MONGODB_URI;

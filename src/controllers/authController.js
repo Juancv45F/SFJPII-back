@@ -615,6 +615,19 @@ const login = async (req, res) => {
             return res.status(403).json({ message: 'Debes verificar tu correo primero.' });
         }
 
+        const accessStatus = String(user?.access?.status || 'active').toLowerCase();
+        const suspendedUntil = user?.access?.suspendedUntil ? new Date(user.access.suspendedUntil) : null;
+        const disabledAt = user?.access?.disabledAt ? new Date(user.access.disabledAt) : null;
+        if (accessStatus === 'disabled' || disabledAt) {
+            return res.status(403).json({ message: 'Tu cuenta está deshabilitada' });
+        }
+        if (accessStatus === 'suspended' && suspendedUntil && suspendedUntil.getTime() > Date.now()) {
+            return res.status(403).json({
+                message: 'Tu cuenta está suspendida temporalmente',
+                suspendedUntil
+            });
+        }
+
         // Verificar contraseña
         const validPass = await bcrypt.compare(password, user.password);
         if (!validPass) return res.status(400).json({ message: 'Credenciales inválidas' });

@@ -1,0 +1,74 @@
+extends ./layout
+
+block content
+  - var title = 'Usuarios'
+  .pageTitle
+    h2 Usuarios
+  .card
+    form(method="get" action="/superadmin/users")
+      .row
+        div
+          label.small(for="q") Buscar por correo
+          input#q(type="text" name="q" value=(q || '') placeholder="correo@dominio.com")
+        div
+          label.small(for="role") Rol
+          select#role(name="role")
+            option(value="" selected=!role) Todos
+            option(value="cliente" selected=(role==='cliente')) cliente
+            option(value="editor" selected=(role==='editor')) editor
+            option(value="admin" selected=(role==='admin')) admin
+        div
+          label.small(for="status") Estado
+          select#status(name="status")
+            option(value="" selected=!status) Todos
+            option(value="active" selected=(status==='active')) active
+            option(value="suspended" selected=(status==='suspended')) suspended
+            option(value="disabled" selected=(status==='disabled')) disabled
+        div(style="display:flex;align-items:flex-end;")
+          button(type="submit") Filtrar
+
+  div(style="height:14px;")
+  if !users || users.length === 0
+    .card
+      div.muted Sin resultados
+  else
+    .userList
+      each u in users
+        - var pillClass = u.status === 'active' ? 'ok' : (u.status === 'suspended' ? 'warn' : 'bad')
+        .card
+          .userCardHeader
+            div
+              div.userName= (u.nombre || '') + ' ' + (u.apellido || '')
+              div.userEmail.muted.small= u.email
+              .userMetaRow
+                if u.createdAt
+                  div= 'Creado: ' + u.createdAt
+                if !u.isVerified
+                  div No verificado
+            div(style="text-align:right;")
+              span.pill(class=pillClass)= u.status
+              if u.status === 'suspended' && u.suspendedUntil
+                div.muted.small(style="margin-top:6px;")= 'Hasta: ' + u.suspendedUntil
+
+          .userBody
+            div
+              div.sectionTitle Rol
+              form(method="post" action=`/superadmin/users/${u.id}/role`)
+                .row(style="gap:10px; align-items:flex-end;")
+                  div
+                    select(name="role")
+                      option(value="cliente" selected=(u.role==='cliente')) cliente
+                      option(value="editor" selected=(u.role==='editor')) editor
+                      option(value="admin" selected=(u.role==='admin')) admin
+                  div(style="min-width:160px; flex:0;")
+                    button(type="submit") Guardar rol
+            div
+              div.sectionTitle Acceso
+              form(method="post")
+                .fieldGrid
+                  input(type="number" name="hours" value="24" min="1" max=(24*365))
+                  input(type="text" name="reason" placeholder="Motivo (opcional)")
+                .btnRow
+                  button.btnPrimary(type="submit" formaction=`/superadmin/users/${u.id}/enable`) Habilitar
+                  button.btnWarn(type="submit" formaction=`/superadmin/users/${u.id}/suspend`) Suspender
+                  button.btnDanger(type="submit" formaction=`/superadmin/users/${u.id}/disable`) Deshabilitar

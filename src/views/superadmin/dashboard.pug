@@ -1,0 +1,175 @@
+extends ./layout
+
+block content
+  - var title = 'Dashboard Super Admin'
+  h2(style="margin:8px 0 14px 0;") Resumen
+  .grid
+    .card.kpi
+      div
+        div.label Peticiones (7 días)
+        div.value= (metrics && metrics.requests ? metrics.requests.reduce((a,b)=>a+b,0) : 0)
+      div.muted.small(style="text-align:right;") UTC
+    .card.kpi
+      div
+        div.label Usuarios nuevos (7 días)
+        div.value= (metrics && metrics.newUsers ? metrics.newUsers.reduce((a,b)=>a+b,0) : 0)
+      div.muted.small(style="text-align:right;") UTC
+
+  div(style="height:14px;")
+  .grid
+    .card
+      h3(style="margin:0 0 10px 0;") Peticiones por día
+      canvas#reqChart(height="140")
+    .card
+      h3(style="margin:0 0 10px 0;") Usuarios nuevos por día
+      canvas#userChart(height="140")
+
+  div(style="height:14px;")
+  .card
+    h3(style="margin:0 0 10px 0;") Usuarios por rol
+    if metrics && metrics.roles
+      .row
+        each val, key in metrics.roles
+          div
+            div.label= key
+            div.value(style="font-size:22px;")= val
+    else
+      p.muted No hay datos.
+
+  script(type="application/json" id="metrics-json") !{JSON.stringify(metrics || {}).replace(/</g, '\\u003c')}
+  script.
+    (function () {
+      function safeParseMetrics() {
+        var el = document.getElementById('metrics-json');
+        var m = {};
+        if (!el) return m;
+        try { m = JSON.parse(el.textContent || '{}'); } catch {}
+        return m || {};
+      }
+
+      function prepCanvas(canvas) {
+        if (!canvas) return null;
+        var parent = canvas.parentElement;
+        var parentW = parent && parent.clientWidth ? parent.clientWidth : 0;
+        var rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { width: 0, height: 0 };
+        var w = Math.max(360, Math.floor(parentW || rect.width || 0));
+        var h = Math.max(180, Math.floor(rect.height || 0));
+        var dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+        var ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return { ctx: ctx, w: w, h: h };
+      }
+
+      function drawLineChart(canvas, data, stroke, fill) {
+        var p = prepCanvas(canvas);
+        if (!p) return;
+        var ctx = p.ctx;
+        var w = p.w, h = p.h;
+        var pad = 18;
+        ctx.clearRect(0, 0, w, h);
+
+        var max = 0;
+        for (var i = 0; i < data.length; i++) max = Math.max(max, Number(data[i] || 0));
+        if (max <= 0) max = 1;
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = 1;
+        for (var g = 0; g <= 4; g++) {
+          var y = pad + (h - pad * 2) * (g / 4);
+          ctx.beginPath();
+          ctx.moveTo(pad, y);
+          ctx.lineTo(w - pad, y);
+          ctx.stroke();
+        }
+
+        var stepX = (w - pad * 2) / Math.max(1, data.length - 1);
+        ctx.beginPath();
+        for (var j = 0; j < data.length; j++) {
+          var x = pad + stepX * j;
+          var v = Number(data[j] || 0);
+          var y2 = pad + (h - pad * 2) * (1 - (v / max));
+          if (j === 0) ctx.moveTo(x, y2); else ctx.lineTo(x, y2);
+        }
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.lineTo(w - pad, h - pad);
+        ctx.lineTo(pad, h - pad);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+
+        for (var k = 0; k < data.length; k++) {
+          var x3 = pad + stepX * k;
+          var v3 = Number(data[k] || 0);
+          var y3 = pad + (h - pad * 2) * (1 - (v3 / max));
+          ctx.beginPath();
+          ctx.arc(x3, y3, 3, 0, Math.PI * 2);
+          ctx.fillStyle = stroke;
+          ctx.fill();
+        }
+      }
+
+      function drawBarChart(canvas, data, color) {
+        var p = prepCanvas(canvas);
+        if (!p) return;
+        var ctx = p.ctx;
+        var w = p.w, h = p.h;
+        var pad = 18;
+        ctx.clearRect(0, 0, w, h);
+
+        var max = 0;
+        for (var i = 0; i < data.length; i++) max = Math.max(max, Number(data[i] || 0));
+        if (max <= 0) max = 1;
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = 1;
+        for (var g = 0; g <= 4; g++) {
+          var y = pad + (h - pad * 2) * (g / 4);
+          ctx.beginPath();
+          ctx.moveTo(pad, y);
+          ctx.lineTo(w - pad, y);
+          ctx.stroke();
+        }
+
+        var innerW = (w - pad * 2);
+        var barW = innerW / Math.max(1, data.length);
+        var gap = Math.min(10, Math.floor(barW * 0.25));
+        for (var j = 0; j < data.length; j++) {
+          var v = Number(data[j] || 0);
+          var bh = (h - pad * 2) * (v / max);
+          var x = pad + j * barW + gap / 2;
+          var y2 = h - pad - bh;
+          var bw2 = Math.max(2, barW - gap);
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y2, bw2, bh);
+        }
+      }
+
+      function render() {
+        var m = safeParseMetrics();
+        var reqs = Array.isArray(m.requests) ? m.requests : [];
+        var users = Array.isArray(m.newUsers) ? m.newUsers : [];
+        var c1 = document.getElementById('reqChart');
+        var c2 = document.getElementById('userChart');
+        drawLineChart(c1, reqs, '#34d399', 'rgba(34,197,94,0.22)');
+        drawBarChart(c2, users, 'rgba(96,165,250,0.45)');
+      }
+
+      if (document.readyState === 'complete') {
+        requestAnimationFrame(render);
+      } else {
+        window.addEventListener('load', function () {
+          requestAnimationFrame(render);
+        }, { once: true });
+      }
+      window.addEventListener('resize', function () {
+        requestAnimationFrame(render);
+      });
+    })();

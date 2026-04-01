@@ -25,7 +25,13 @@ const schema = new mongoose.Schema({
   verificationCode: { type: String },
   verificationCodeSentAt: { type: Date },
   isVerified: { type: Boolean, default: false },
-  role: { type: String, enum: ['admin', 'editor', 'cliente'], default: 'cliente' },
+  role: { type: String, enum: ['super_admin', 'admin', 'editor', 'cliente'], default: 'cliente' },
+  access: {
+    status: { type: String, enum: ['active', 'suspended', 'disabled'], default: 'active' },
+    suspendedUntil: { type: Date },
+    disabledAt: { type: Date },
+    reason: { type: String }
+  },
   
   webauthn: {
     currentChallenge: { type: String },

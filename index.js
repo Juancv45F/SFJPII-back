@@ -15,12 +15,16 @@ const userRoutes = require('./src/routes/userRoutes');
 const path = require('path');
 const { requestLogger, errorHandler } = require('./src/middlewares/logging');
 const { child } = require('./src/utils/logger');
+const session = require('express-session');
+const superAdminRoutes = require('./src/routes/superAdminRoutes');
 
 
 
 const app = express();
 app.set('etag', false);
 app.set('trust proxy', 1); // Confía en el primer proxy (necesario para Render/Heroku)
+app.set('views', path.join(__dirname, 'src/views'));
+app.set('view engine', 'pug');
 
 // 1. CONFIGURACIÓN DE CORS (DEBE IR ANTES DE LOS RATE LIMITERS)
 app.use(cors({
@@ -45,6 +49,7 @@ app.use(helmet({
 app.use(generalLimiter); 
 
 app.use(express.json()); // Que entienda json
+app.use(express.urlencoded({ extended: false }));
 app.use(requestLogger); // Correlación y métricas de request
 
 // Servir archivos estáticos de la carpeta uploads
@@ -60,20 +65,22 @@ app.get('/', (req, res) => {
 })
 
 // Conexion a la base de datos
-connect()
-    .then(() => {
-        const logger = child({ component: 'mongoose' });
-        logger.info('mongo_connected');
-    })
-    .catch((e) => {
-        const logger = child({ component: 'mongoose' });
-        logger.error('mongo_connection_error', { context: { message: e.message, code: e.code, name: e.name, stack: e.stack } });
-        try { console.error('mongo_connection_error', e); } catch {}
-        const exitOnFail = String(process.env.MONGO_EXIT_ON_FAIL || 'true').toLowerCase() === 'true';
-        if (exitOnFail) {
-            process.exit(1);
-        }
-    });
+if (process.env.NODE_ENV !== 'test') {
+    connect()
+        .then(() => {
+            const logger = child({ component: 'mongoose' });
+            logger.info('mongo_connected');
+        })
+        .catch((e) => {
+            const logger = child({ component: 'mongoose' });
+            logger.error('mongo_connection_error', { context: { message: e.message, code: e.code, name: e.name, stack: e.stack } });
+            try { console.error('mongo_connection_error', e); } catch {}
+            const exitOnFail = String(process.env.MONGO_EXIT_ON_FAIL || 'true').toLowerCase() === 'true';
+            if (exitOnFail) {
+                process.exit(1);
+            }
+        });
+}
 
 // Crear servidor HTTP
 const server = http.createServer(app);
@@ -113,6 +120,35 @@ io.on('connection', (socket) => {
 app.set('socketio', io);
 
 // Rutas
+const sessionSecret = process.env.SUPERADMIN_SESSION_SECRET || process.env.JWT_SECRET || 'dev_superadmin_secret';
+app.use('/superadmin', (req, res, next) => {
+    res.setHeader('Content-Security-Policy', [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "img-src 'self' data: https:",
+        "style-src 'self' 'unsafe-inline'",
+        "script-src 'self' 'unsafe-inline'",
+        "connect-src 'self'",
+    ].join('; '));
+    next();
+});
+app.use('/superadmin', session({
+    name: 'sfjpii_superadmin',
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    cookie: {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 8 * 60 * 60 * 1000
+    }
+}));
+app.use('/superadmin', superAdminRoutes);
+
 app.use('/api/productos', productRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/pedidos',pedidoRoutes);

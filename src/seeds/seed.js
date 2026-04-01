@@ -9,8 +9,18 @@ async function seedDatabase() {
   await connect();
   await Promise.all([Pedido.deleteMany({}), Producto.deleteMany({}), User.deleteMany({})]);
   const salt = await bcrypt.genSalt(10);
+  const passSuperAdmin = await bcrypt.hash('SuperAdmin123!', salt);
   const passAdmin = await bcrypt.hash('Admin123', salt);
   const passCliente = await bcrypt.hash('Cliente123', salt);
+  await User.create({
+    nombre: 'Super',
+    apellido: 'Admin',
+    email: 'superadmin@sfjpii.local',
+    password: passSuperAdmin,
+    role: 'super_admin',
+    isVerified: true,
+    ubicaciones: []
+  });
   const admin = await User.create({
     nombre: 'Juan Pablo',
     apellido: 'Admin',
