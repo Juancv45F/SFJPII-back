@@ -84,13 +84,11 @@ function shouldUseAccessCookie() {
 }
 
 function shouldExposeAccessTokenInBody() {
-    const raw = process.env.AUTH_EXPOSE_ACCESS_TOKEN;
-    if (typeof raw === 'string') return raw.toLowerCase() === 'true';
-    return !shouldUseAccessCookie();
+    return true;
 }
 
 function shouldExposeRefreshTokenInBody() {
-    return String(process.env.AUTH_EXPOSE_REFRESH_TOKEN || 'false').toLowerCase() === 'true';
+    return true;
 }
 
 function remainingCooldownSec(sentAt) {
