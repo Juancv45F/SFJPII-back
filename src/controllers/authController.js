@@ -19,6 +19,74 @@ const isLettersSpaces = (v) => /^[A-Za-zÀ-ÖØ-öø-ÿ\s]+$/.test(v);
 const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
 const resendCooldownMs = Number(process.env.RESEND_COOLDOWN_MS) || 60 * 1000;
 
+const REFRESH_COOKIE_NAME = process.env.AUTH_REFRESH_COOKIE_NAME || 'sfjpii_rt';
+const ACCESS_COOKIE_NAME = process.env.AUTH_ACCESS_COOKIE_NAME || 'sfjpii_at';
+
+function parseCookieHeader(header) {
+    const out = {};
+    if (!header || typeof header !== 'string') return out;
+    const parts = header.split(';');
+    for (const p of parts) {
+        const i = p.indexOf('=');
+        if (i === -1) continue;
+        const k = p.slice(0, i).trim();
+        const v = p.slice(i + 1).trim();
+        if (!k) continue;
+        out[k] = decodeURIComponent(v);
+    }
+    return out;
+}
+
+function getCookie(req, name) {
+    const header = req?.headers?.cookie;
+    const cookies = parseCookieHeader(header);
+    return cookies && Object.prototype.hasOwnProperty.call(cookies, name) ? cookies[name] : undefined;
+}
+
+function cookieOptions(req, kind) {
+    const isProd = process.env.NODE_ENV === 'production';
+    const configuredSameSite = process.env.AUTH_COOKIE_SAMESITE;
+    const sameSite = configuredSameSite ? String(configuredSameSite).toLowerCase() : (isProd ? 'none' : 'lax');
+    const secure = sameSite === 'none' ? true : isProd;
+    const maxAgeMs = kind === 'access'
+        ? (Number(process.env.JWT_ACCESS_COOKIE_TTL_MS) || 15 * 60 * 1000)
+        : (Number(process.env.JWT_REFRESH_COOKIE_TTL_MS) || 7 * 24 * 60 * 60 * 1000);
+    const domain = process.env.AUTH_COOKIE_DOMAIN ? String(process.env.AUTH_COOKIE_DOMAIN) : undefined;
+    const path = process.env.AUTH_COOKIE_PATH ? String(process.env.AUTH_COOKIE_PATH) : '/';
+    return {
+        httpOnly: true,
+        secure,
+        sameSite,
+        domain,
+        path,
+        maxAge: maxAgeMs
+    };
+}
+
+function setRefreshCookie(req, res, refreshToken) {
+    if (!res || typeof res.cookie !== 'function') return;
+    res.cookie(REFRESH_COOKIE_NAME, String(refreshToken), cookieOptions(req, 'refresh'));
+}
+
+function setAccessCookie(req, res, accessToken) {
+    if (!res || typeof res.cookie !== 'function') return;
+    res.cookie(ACCESS_COOKIE_NAME, String(accessToken), cookieOptions(req, 'access'));
+}
+
+function clearAuthCookies(req, res) {
+    if (!res || typeof res.clearCookie !== 'function') return;
+    res.clearCookie(REFRESH_COOKIE_NAME, cookieOptions(req, 'refresh'));
+    res.clearCookie(ACCESS_COOKIE_NAME, cookieOptions(req, 'access'));
+}
+
+function shouldUseAccessCookie() {
+    return String(process.env.AUTH_USE_ACCESS_COOKIE || 'false').toLowerCase() === 'true';
+}
+
+function shouldExposeRefreshTokenInBody() {
+    return String(process.env.AUTH_EXPOSE_REFRESH_TOKEN || 'false').toLowerCase() === 'true';
+}
+
 function remainingCooldownSec(sentAt) {
     if (!sentAt) return 0;
     const elapsed = Date.now() - new Date(sentAt).getTime();
@@ -679,10 +747,13 @@ const login = async (req, res) => {
         const refreshToken = createRefreshToken(user);
         await persistRefreshToken({ user, refreshToken, req });
 
+        setRefreshCookie(req, res, refreshToken);
+        if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
+
         res.json({
             message: 'Bienvenido',
             token,
-            refreshToken,
+            ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -834,10 +905,13 @@ const verifyMfa = async (req, res) => {
         const refreshToken = createRefreshToken(user);
         await persistRefreshToken({ user, refreshToken, req });
 
+        setRefreshCookie(req, res, refreshToken);
+        if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
+
         return res.json({
             message: 'Bienvenido',
             token,
-            refreshToken,
+            ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -855,9 +929,8 @@ const refresh = async (req, res) => {
     try {
         let { refreshToken } = req.body || {};
         refreshToken = sanitize(refreshToken);
-        if (!isNonEmpty(refreshToken)) {
-            return res.status(400).json({ message: 'Falta refreshToken' });
-        }
+        if (!isNonEmpty(refreshToken)) refreshToken = sanitize(getCookie(req, REFRESH_COOKIE_NAME));
+        if (!isNonEmpty(refreshToken)) return res.status(400).json({ message: 'Falta refreshToken' });
 
         const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
         let decoded;
@@ -915,9 +988,11 @@ const refresh = async (req, res) => {
         });
 
         const token = createAccessToken(user);
+        setRefreshCookie(req, res, newRefreshToken);
+        if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
         return res.json({
             token,
-            refreshToken: newRefreshToken,
+            ...(shouldExposeRefreshTokenInBody() ? { refreshToken: newRefreshToken } : {}),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -929,6 +1004,35 @@ const refresh = async (req, res) => {
         logger.error('refresh_error', { context: { message: error.message, stack: error.stack } });
         res.status(500).json({ message: 'Error al refrescar token' });
     }
+};
+
+const logoutApi = async (req, res) => {
+    try {
+        const tokenFromCookie = sanitize(getCookie(req, REFRESH_COOKIE_NAME));
+        if (isNonEmpty(tokenFromCookie)) {
+            const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+            let decoded;
+            try {
+                decoded = jwt.verify(tokenFromCookie, refreshSecret);
+            } catch {
+                decoded = null;
+            }
+            if (decoded && decoded.typ === 'refresh' && decoded.uid) {
+                const user = await User.findById(String(decoded.uid)).exec();
+                if (user) {
+                    const tokenHash = sha256(tokenFromCookie);
+                    user.refreshTokens = Array.isArray(user.refreshTokens) ? user.refreshTokens : [];
+                    const idx = user.refreshTokens.findIndex(t => t && t.tokenHash === tokenHash);
+                    if (idx !== -1 && !user.refreshTokens[idx].revokedAt) {
+                        user.refreshTokens[idx].revokedAt = new Date();
+                        await user.save();
+                    }
+                }
+            }
+        }
+    } catch {}
+    clearAuthCookies(req, res);
+    return res.json({ message: 'Sesión cerrada' });
 };
 
 /**
@@ -1463,10 +1567,13 @@ const webauthnFinishLogin = async (req, res) => {
         const refreshToken = createRefreshToken(user);
         await persistRefreshToken({ user, refreshToken, req });
 
+        setRefreshCookie(req, res, refreshToken);
+        if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
+
         return res.json({
             message: 'Bienvenido',
             token,
-            refreshToken,
+            ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -1539,6 +1646,7 @@ module.exports = {
     resendMfaOtp,
     verifyMfa,
     refresh,
+    logoutApi,
     generateSsoToken,
     validateSsoToken,
     webauthnBeginRegistration,

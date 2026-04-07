@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, verifyCode, resendVerifyCode, login, resendMfaOtp, verifyMfa, refresh, generateSsoToken, validateSsoToken, webauthnBeginRegistration, webauthnFinishRegistration, webauthnBeginLogin, webauthnFinishLogin, webauthnListCredentials, webauthnDeleteCredentials, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
+const { register, verifyCode, resendVerifyCode, login, resendMfaOtp, verifyMfa, refresh, logoutApi, generateSsoToken, validateSsoToken, webauthnBeginRegistration, webauthnFinishRegistration, webauthnBeginLogin, webauthnFinishLogin, webauthnListCredentials, webauthnDeleteCredentials, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
 const { validateToken } = require('../middlewares/validateToken');
 const { authLimiter } = require('../middlewares/security');
 
@@ -28,6 +28,8 @@ router.post('/mfa/resend', resendMfaOtp);
 router.post('/mfa/verify', verifyMfa);
 
 router.post('/refresh', refresh);
+
+router.post('/logout', logoutApi);
 
 // --- SSO ---
 router.get('/sso/token', [validateToken], generateSsoToken);

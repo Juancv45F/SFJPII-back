@@ -16,6 +16,15 @@ const {
 
 const router = Router();
 
+router.use((req, res, next) => {
+  const qTheme = typeof req.query?.theme === 'string' ? req.query.theme.trim().toLowerCase() : '';
+  if (qTheme === 'light' || qTheme === 'dark') {
+    req.session.superAdminTheme = qTheme;
+  }
+  res.locals.theme = req?.session?.superAdminTheme || 'dark';
+  next();
+});
+
 router.get('/login', [redirectIfLoggedIn], renderLogin);
 router.post('/login', [authLimiter], handleLogin);
 router.get('/logout', logout);

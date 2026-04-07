@@ -1,6 +1,29 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models-mongo/user');
 
+const ACCESS_COOKIE_NAME = process.env.AUTH_ACCESS_COOKIE_NAME || 'sfjpii_at';
+
+function parseCookieHeader(header) {
+    const out = {};
+    if (!header || typeof header !== 'string') return out;
+    const parts = header.split(';');
+    for (const p of parts) {
+        const i = p.indexOf('=');
+        if (i === -1) continue;
+        const k = p.slice(0, i).trim();
+        const v = p.slice(i + 1).trim();
+        if (!k) continue;
+        out[k] = decodeURIComponent(v);
+    }
+    return out;
+}
+
+function getCookie(req, name) {
+    const header = req?.headers?.cookie;
+    const cookies = parseCookieHeader(header);
+    return cookies && Object.prototype.hasOwnProperty.call(cookies, name) ? cookies[name] : undefined;
+}
+
 const validateToken = async (req, res, next) => {
     // Obtener el token del encabezado (Header)
     // Se espera que venga así: "x-token": "eyJhbGciOiJIUz..."
@@ -10,7 +33,9 @@ const validateToken = async (req, res, next) => {
         typeof authorization === 'string' && authorization.toLowerCase().startsWith('bearer ')
             ? authorization.slice(7).trim()
             : authorization;
-    const token = fromXToken || fromAuthorization;
+    let token = fromXToken || fromAuthorization;
+    const useAccessCookie = String(process.env.AUTH_USE_ACCESS_COOKIE || 'false').toLowerCase() === 'true';
+    if (!token && useAccessCookie) token = getCookie(req, ACCESS_COOKIE_NAME);
 
     if (!token) {
         return res.status(401).json({ message: 'No hay token en la petición' });
