@@ -51,6 +51,7 @@ app.use(generalLimiter);
 app.use(express.json()); // Que entienda json
 app.use(express.urlencoded({ extended: false }));
 app.use(requestLogger); // Correlación y métricas de request
+app.set('trust proxy', 1);
 
 // Servir archivos estáticos de la carpeta uploads
 app.use('/uploads', express.static(path.join(__dirname, 'src/public/uploads')));

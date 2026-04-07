@@ -127,7 +127,15 @@ async function handleLogin(req, res) {
 
     const logger = child({ component: 'superadmin', userId: String(user._id) });
     logger.info('superadmin_login_ok');
-    return res.redirect('/superadmin');
+
+    req.session.save((err) => {
+      if (err) {
+        logger.error('superadmin_session_save_error', { context: { message: err.message } });
+        return res.status(500).render('superadmin/login', { error: 'Error al guardar sesión' });
+      }
+      // Ahora sí, redirigimos sabiendo que la sesión existe en la DB
+      return res.redirect('/superadmin');
+    });
   } catch (error) {
     const logger = child({ component: 'superadmin' });
     logger.error('superadmin_login_error', { context: { message: error.message, stack: error.stack } });
