@@ -14,6 +14,8 @@ const {
   getRecoveryQuestionsStatus,
   beginTotpSetup,
   verifyTotpSetup,
+  resetTotpStart,
+  resetTotpVerify,
   upsertPushToken,
   removePushToken
 } = require('../controllers/userController');
@@ -26,6 +28,8 @@ router.put('/password', [validateToken], changePassword);
 router.put('/mfa', [validateToken], updateMfa);
 router.post('/mfa/totp/setup', [validateToken], beginTotpSetup);
 router.post('/mfa/totp/verify', [validateToken], verifyTotpSetup);
+router.post('/mfa/totp/reset/start', [validateToken], resetTotpStart);
+router.post('/mfa/totp/reset/verify', [validateToken], resetTotpVerify);
 
 // Preguntas de seguridad
 router.get('/recovery/questions', [validateToken], getRecoveryQuestionsStatus);

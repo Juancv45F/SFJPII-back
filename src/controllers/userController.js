@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models-mongo/user');
 const { child } = require('../utils/logger');
@@ -200,6 +201,34 @@ async function updateMfa(req, res) {
   }
 }
 
+function backupPepper() {
+  return process.env.MFA_BACKUP_PEPPER || process.env.JWT_SECRET || 'dev_backup_pepper';
+}
+
+function sha256(v) {
+  return crypto.createHash('sha256').update(String(v)).digest('hex');
+}
+
+function generateBackupCodes(count, length) {
+  const n = Number(count) > 0 ? Number(count) : 10;
+  const len = Number(length) > 0 ? Number(length) : 10;
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const bytes = crypto.randomBytes(len);
+    let code = '';
+    for (let j = 0; j < len; j++) {
+      code += alphabet[bytes[j] % alphabet.length];
+    }
+    out.push(code);
+  }
+  return out;
+}
+
+function hashBackupCode(code) {
+  return sha256(`${backupPepper()}:${String(code).trim().toUpperCase()}`);
+}
+
 async function beginTotpSetup(req, res) {
   try {
     const user = await User.findById(req.uid).exec();
@@ -261,14 +290,104 @@ async function verifyTotpSetup(req, res) {
     user.mfa.otpHash = undefined;
     user.mfa.otpExpiresAt = undefined;
     user.mfa.otpSentAt = undefined;
+
+    const hasBackupCodes = Array.isArray(user?.mfa?.backupCodes) && user.mfa.backupCodes.length > 0;
+    let backupCodes = null;
+    if (!hasBackupCodes) {
+      const codes = generateBackupCodes(Number(process.env.MFA_BACKUP_CODES_COUNT) || 10, Number(process.env.MFA_BACKUP_CODE_LENGTH) || 10);
+      user.mfa.backupCodes = codes.map(c => ({ codeHash: hashBackupCode(c) }));
+      backupCodes = codes;
+    }
     await user.save();
 
-    return res.json({ message: 'Google Authenticator configurado y MFA activado.' });
+    return res.json({ message: 'Google Authenticator configurado y MFA activado.', backupCodes });
   } catch (e) {
     return res.status(500).json({ message: 'Error al verificar TOTP' });
   }
 }
 
+async function resetTotpStart(req, res) {
+  try {
+    let { currentPassword } = req.body || {};
+    currentPassword = sanitize(currentPassword);
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    if (!user.isVerified) return res.status(400).json({ message: 'Debes verificar tu correo primero.' });
+    const enabledTotp = String(user?.mfa?.method || user?.mfa?.channel || '').toLowerCase() === 'totp';
+
+    if (enabledTotp) {
+      if (!isNonEmpty(currentPassword)) {
+        return res.status(400).json({ message: 'Debes confirmar tu contraseña para reiniciar Google Authenticator.' });
+      }
+      const okPass = await bcrypt.compare(currentPassword, user.password);
+      if (!okPass) return res.status(401).json({ message: 'Contraseña incorrecta.' });
+    }
+
+    const secret = speakeasy.generateSecret({
+      length: 20,
+      name: `SFJPII (${String(user.email).toLowerCase()})`
+    });
+    const base32 = String(secret.base32 || '');
+    const otpauthUrl = String(secret.otpauth_url || '');
+    if (!base32 || !otpauthUrl) return res.status(500).json({ message: 'No se pudo generar el secreto TOTP.' });
+
+    user.mfa = user.mfa || {};
+    user.mfa.totpTempSecret = base32;
+    user.mfa.method = 'totp';
+    user.mfa.channel = 'totp';
+    await user.save();
+
+    const qrDataUrl = await qrcode.toDataURL(otpauthUrl, { margin: 1, width: 220 });
+    return res.json({ otpauthUrl, qrDataUrl, secret: base32 });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error al iniciar reinicio TOTP' });
+  }
+}
+
+async function resetTotpVerify(req, res) {
+  try {
+    let { code } = req.body || {};
+    code = sanitize(code);
+    if (!isNonEmpty(code)) return res.status(400).json({ message: 'Falta código' });
+    const token = String(code).replace(/\D/g, '');
+    if (token.length !== 6 && token.length !== 8) {
+      return res.status(400).json({ message: 'El código debe tener 6 u 8 dígitos.' });
+    }
+
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    const temp = user?.mfa?.totpTempSecret;
+    if (!isNonEmpty(temp)) return res.status(400).json({ message: 'No hay reinicio TOTP pendiente.' });
+
+    const ok = speakeasy.totp.verify({
+      secret: String(temp),
+      encoding: 'base32',
+      token,
+      window: Number(process.env.TOTP_WINDOW || 2)
+    });
+    if (!ok) return res.status(400).json({ message: 'Código incorrecto.' });
+
+    user.mfa = user.mfa || {};
+    user.mfa.totpSecret = String(temp); // sustituye el secreto previo
+    user.mfa.totpTempSecret = undefined;
+    user.mfa.totpVerifiedAt = new Date();
+    user.mfa.enabled = true;
+    user.mfa.method = 'totp';
+    user.mfa.channel = 'totp';
+    user.mfa.otpAttempts = 0;
+    user.mfa.otpHash = undefined;
+    user.mfa.otpExpiresAt = undefined;
+    user.mfa.otpSentAt = undefined;
+
+    const codes = generateBackupCodes(Number(process.env.MFA_BACKUP_CODES_COUNT) || 10, Number(process.env.MFA_BACKUP_CODE_LENGTH) || 10);
+    user.mfa.backupCodes = codes.map(c => ({ codeHash: hashBackupCode(c) }));
+    await user.save();
+
+    return res.json({ message: 'Google Authenticator reiniciado y activado.', backupCodes: codes });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error al verificar reinicio TOTP' });
+  }
+}
 async function getPreferences(req, res) {
   try {
     const user = await User.findById(req.uid).select('preferences').exec();
@@ -549,6 +668,8 @@ module.exports = {
   updateMfa,
   beginTotpSetup,
   verifyTotpSetup,
+  resetTotpStart,
+  resetTotpVerify,
   getPreferences,
   updatePreferences,
   listSessions,

@@ -67,7 +67,12 @@ const schema = new mongoose.Schema({
     otpSentAt: { type: Date },
     totpSecret: { type: String },
     totpTempSecret: { type: String },
-    totpVerifiedAt: { type: Date }
+    totpVerifiedAt: { type: Date },
+    backupCodes: [{
+      codeHash: { type: String, required: true },
+      createdAt: { type: Date, default: Date.now },
+      usedAt: { type: Date }
+    }]
   },
   preferences: {
     theme: { type: String, default: 'light' },

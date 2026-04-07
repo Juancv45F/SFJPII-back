@@ -1,10 +1,19 @@
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const User = require('../models-mongo/user');
 const { child } = require('../utils/logger');
 
 const LOG_DIR = path.join(__dirname, '../../logs');
+const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+
+function getClientIp(req) {
+  let ip = req?.ip || req?.headers?.['x-forwarded-for'] || req?.connection?.remoteAddress;
+  if (Array.isArray(ip)) ip = ip[0];
+  if (typeof ip === 'string' && ip.includes(',')) ip = ip.split(',')[0].trim();
+  return ip ? String(ip) : '';
+}
 
 function safeParseJson(line) {
   try { return JSON.parse(line); } catch { return null; }
@@ -103,8 +112,18 @@ async function handleLogin(req, res) {
       return res.status(401).render('superadmin/login', { error: 'Credenciales inválidas' });
     }
 
+    const ua = req?.header?.('user-agent') || req?.headers?.['user-agent'] || '';
+    const ip = getClientIp(req);
+    const bindIp = String(process.env.SUPERADMIN_SESSION_BIND_IP || 'false').toLowerCase() === 'true';
+
+    await new Promise((resolve, reject) => {
+      req.session.regenerate((err) => err ? reject(err) : resolve());
+    });
+
     req.session.superAdminUserId = String(user._id);
     req.session.superAdminLoggedInAt = new Date().toISOString();
+    req.session.superAdminUaHash = sha256(ua);
+    req.session.superAdminIpHash = bindIp ? sha256(ip) : undefined;
 
     const logger = child({ component: 'superadmin', userId: String(user._id) });
     logger.info('superadmin_login_ok');

@@ -83,6 +83,12 @@ function shouldUseAccessCookie() {
     return String(process.env.AUTH_USE_ACCESS_COOKIE || 'false').toLowerCase() === 'true';
 }
 
+function shouldExposeAccessTokenInBody() {
+    const raw = process.env.AUTH_EXPOSE_ACCESS_TOKEN;
+    if (typeof raw === 'string') return raw.toLowerCase() === 'true';
+    return !shouldUseAccessCookie();
+}
+
 function shouldExposeRefreshTokenInBody() {
     return String(process.env.AUTH_EXPOSE_REFRESH_TOKEN || 'false').toLowerCase() === 'true';
 }
@@ -752,7 +758,7 @@ const login = async (req, res) => {
 
         res.json({
             message: 'Bienvenido',
-            token,
+            ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
             user: {
                 id: String(user._id),
@@ -772,8 +778,9 @@ const login = async (req, res) => {
 
 const resendMfaOtp = async (req, res) => {
     try {
-        let { mfaToken } = req.body || {};
+        let { mfaToken, method } = req.body || {};
         mfaToken = sanitize(mfaToken);
+        method = sanitize(method);
         if (!isNonEmpty(mfaToken)) {
             return res.status(400).json({ message: 'Falta mfaToken' });
         }
@@ -794,9 +801,11 @@ const resendMfaOtp = async (req, res) => {
         if (!user?.mfa?.enabled) {
             return res.status(400).json({ message: 'MFA no está habilitado para este usuario' });
         }
-        const method = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
-        if (method === 'totp') {
-            return res.status(400).json({ message: 'El método TOTP no requiere reenvío' });
+        const configuredMethod = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
+        const requestedMethod = isNonEmpty(method) ? String(method).toLowerCase() : '';
+        const effectiveMethod = requestedMethod || configuredMethod;
+        if (effectiveMethod !== 'email') {
+            return res.status(400).json({ message: 'Método inválido para reenvío' });
         }
 
         const waitSec = remainingCooldownSec(user?.mfa?.otpSentAt);
@@ -821,7 +830,7 @@ const resendMfaOtp = async (req, res) => {
         if (!sent && process.env.NODE_ENV === 'production' && !isEmailSimulationEnabled()) {
             return res.status(503).json({ message: 'No se pudo enviar el código OTP. Intenta más tarde.' });
         }
-        return res.json({ message: 'OTP reenviado', retryAfterSec: Math.ceil(resendCooldownMs / 1000) });
+        return res.json({ message: 'OTP reenviado', retryAfterSec: Math.ceil(resendCooldownMs / 1000), mfaMethod: 'email' });
     } catch (error) {
         const logger = child();
         logger.error('resend_mfa_error', { context: { message: error.message, stack: error.stack } });
@@ -831,9 +840,10 @@ const resendMfaOtp = async (req, res) => {
 
 const verifyMfa = async (req, res) => {
     try {
-        let { mfaToken, otp } = req.body || {};
+        let { mfaToken, otp, method } = req.body || {};
         mfaToken = sanitize(mfaToken);
         otp = sanitize(otp);
+        method = sanitize(method);
         if (!isNonEmpty(mfaToken) || !isNonEmpty(otp)) {
             return res.status(400).json({ message: 'Datos inválidos.' });
         }
@@ -861,8 +871,29 @@ const verifyMfa = async (req, res) => {
             return res.status(429).json({ message: 'Demasiados intentos' });
         }
 
-        const method = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
-        if (method === 'totp') {
+        const configuredMethod = String(user?.mfa?.method || user?.mfa?.channel || 'email').toLowerCase();
+        const requestedMethod = isNonEmpty(method) ? String(method).toLowerCase() : '';
+        const effectiveMethod = requestedMethod || configuredMethod;
+
+        const backupPepper = process.env.MFA_BACKUP_PEPPER || process.env.JWT_SECRET || 'dev_backup_pepper';
+        const hashBackup = (code) => sha256(`${backupPepper}:${String(code).trim().toUpperCase()}`);
+
+        if (effectiveMethod === 'backup') {
+            const candidate = String(otp).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+            if (candidate.length < 8 || candidate.length > 16) {
+                return res.status(400).json({ message: 'Código de respaldo inválido' });
+            }
+            const codes = Array.isArray(user?.mfa?.backupCodes) ? user.mfa.backupCodes : [];
+            const h = hashBackup(candidate);
+            const idx = codes.findIndex(c => c && !c.usedAt && String(c.codeHash) === h);
+            if (idx === -1) {
+                user.mfa.otpAttempts = attempts + 1;
+                await user.save();
+                return res.status(400).json({ message: 'Código de respaldo incorrecto' });
+            }
+            codes[idx].usedAt = new Date();
+            user.mfa.backupCodes = codes;
+        } else if (effectiveMethod === 'totp') {
             if (!isNonEmpty(user?.mfa?.totpSecret)) {
                 return res.status(400).json({ message: 'TOTP no configurado' });
             }
@@ -881,7 +912,7 @@ const verifyMfa = async (req, res) => {
                 await user.save();
                 return res.status(400).json({ message: 'Código incorrecto' });
             }
-        } else {
+        } else if (effectiveMethod === 'email') {
             const now = new Date();
             const otpExpiresAt = user?.mfa?.otpExpiresAt ? new Date(user.mfa.otpExpiresAt) : null;
             if (!user?.mfa?.otpHash || !otpExpiresAt || otpExpiresAt.getTime() < now.getTime()) {
@@ -894,6 +925,8 @@ const verifyMfa = async (req, res) => {
                 await user.save();
                 return res.status(400).json({ message: 'OTP incorrecto' });
             }
+        } else {
+            return res.status(400).json({ message: 'Método MFA inválido' });
         }
 
         user.mfa.otpHash = undefined;
@@ -910,7 +943,7 @@ const verifyMfa = async (req, res) => {
 
         return res.json({
             message: 'Bienvenido',
-            token,
+            ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
             user: {
                 id: String(user._id),
@@ -988,10 +1021,10 @@ const refresh = async (req, res) => {
         });
 
         const token = createAccessToken(user);
-        setRefreshCookie(req, res, newRefreshToken);
         if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
+        setRefreshCookie(req, res, newRefreshToken);
         return res.json({
-            token,
+            ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken: newRefreshToken } : {}),
             user: {
                 id: String(user._id),
@@ -1572,7 +1605,7 @@ const webauthnFinishLogin = async (req, res) => {
 
         return res.json({
             message: 'Bienvenido',
-            token,
+            ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
             user: {
                 id: String(user._id),
