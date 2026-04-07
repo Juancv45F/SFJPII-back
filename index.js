@@ -142,7 +142,7 @@ app.use('/superadmin', session({
     rolling: true,
     cookie: {
         httpOnly: true,
-        sameSite: 'strict',
+        sameSite: 'lax',
         secure: process.env.NODE_ENV === 'production',
         path: '/superadmin',
         maxAge: 8 * 60 * 60 * 1000
