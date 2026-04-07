@@ -1,6 +1,5 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models-mongo/user');
 const { child } = require('../utils/logger');
@@ -201,14 +200,6 @@ async function updateMfa(req, res) {
   }
 }
 
-function backupPepper() {
-  return process.env.MFA_BACKUP_PEPPER || process.env.JWT_SECRET || 'dev_backup_pepper';
-}
-
-function sha256(v) {
-  return crypto.createHash('sha256').update(String(v)).digest('hex');
-}
-
 function generateBackupCodes(count, length) {
   const n = Number(count) > 0 ? Number(count) : 10;
   const len = Number(length) > 0 ? Number(length) : 10;
@@ -226,7 +217,8 @@ function generateBackupCodes(count, length) {
 }
 
 function hashBackupCode(code) {
-  return sha256(`${backupPepper()}:${String(code).trim().toUpperCase()}`);
+  const pepper = process.env.MFA_BACKUP_PEPPER || process.env.JWT_SECRET || 'dev_backup_pepper';
+  return sha256(`${pepper}:${String(code).trim().toUpperCase()}`);
 }
 
 async function beginTotpSetup(req, res) {
