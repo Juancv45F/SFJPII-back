@@ -1230,6 +1230,7 @@ const requestPasswordRecovery = async (req, res) => {
             lastRequestedAt: now
         };
         await user.save();
+        const recoLogger = child({ userId: String(user._id) });
 
         // Simulación de envío según método
         if (method === 'sms') {
