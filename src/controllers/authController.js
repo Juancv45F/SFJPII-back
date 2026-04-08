@@ -253,6 +253,43 @@ async function sendEmailViaHttp({ to, subject, text, logger }) {
     }
 }
 
+async function sendAccountNotFoundEmail({ to, action, logger }) {
+    let sentByEmail = false;
+    const subject = action === 'recovery' 
+        ? 'Aviso de seguridad: Recuperación de contraseña' 
+        : 'Aviso de seguridad: Solicitud de código OTP';
+        
+    const text = `Hola,\n\nHemos recibido una solicitud de ${action === 'recovery' ? 'recuperación de contraseña' : 'código OTP'} asociada a esta dirección de correo electrónico.\n\nSin embargo, te informamos que no existe ninguna cuenta registrada con este correo en nuestra plataforma. Si no fuiste tú quien realizó esta solicitud, puedes ignorar este mensaje de forma segura.\n\nSaludos.`;
+
+    try {
+        const httpPreferred = !!getHttpEmailProvider();
+        if (httpPreferred) {
+            // Usa Brevo/Sendgrid automáticamente
+            sentByEmail = await sendEmailViaHttp({ to, subject, text, logger });
+            if (sentByEmail) return true;
+        }
+
+        const smtpCfg = getSmtpConfig();
+        const transporter = await getSmtpTransporter(logger);
+        if (transporter && smtpCfg) {
+            await transporter.sendMail({ from: smtpCfg.from, to, subject, text });
+            logger.info('security_alert_email_success', { context: { to } });
+            sentByEmail = true;
+        }
+    } catch (err) {
+        logger?.error?.('security_alert_email_failed', { context: { to, error: err.message } });
+        sentByEmail = false;
+    }
+    
+    if (!sentByEmail && isEmailSimulationEnabled()) {
+        console.log('=============================================');
+        console.log(`🛡️  [ALERTA SIMULADA] Mensaje para ${to}:`);
+        console.log(`Intento de ${action} fallido (cuenta no existe).`);
+        console.log('=============================================');
+    }
+    return sentByEmail;
+}
+
 function getSmtpConfigKey(cfg) {
     return JSON.stringify({
         host: cfg.host,
@@ -371,6 +408,58 @@ async function sendOtpEmail({ to, code, logger }) {
             console.log('=============================================');
         }
     }
+    return sentByEmail;
+}
+
+async function sendRecoveryEmail({ to, code, logger }) {
+    let sentByEmail = false;
+    try {
+        const httpPreferred = !!getHttpEmailProvider();
+        if (httpPreferred) {
+            // Esto usará Brevo automáticamente si lo tienes en el .env
+            sentByEmail = await sendEmailViaHttp({
+                to,
+                subject: 'Recuperación de contraseña',
+                text: `Tu código de recuperación es: ${code}\n\nTienes 15 minutos para usarlo.`,
+                logger
+            });
+            if (sentByEmail) return true;
+        }
+
+        const smtpCfg = getSmtpConfig();
+        const transporter = await getSmtpTransporter(logger);
+        if (transporter && smtpCfg) {
+            const info = await transporter.sendMail({
+                from: smtpCfg.from,
+                to,
+                subject: 'Recuperación de contraseña',
+                text: `Tu código de recuperación es: ${code}\n\nTienes 15 minutos para usarlo.`
+            });
+            logger.info('recovery_email_send_success', { context: { to, messageId: info && info.messageId ? info.messageId : null } });
+            sentByEmail = true;
+        } else {
+            logger.warn('recovery_email_not_configured');
+        }
+    } catch (err) {
+        const cfg = getSmtpConfig();
+        logger.error('recovery_email_send_failed', {
+            context: {
+                message: err.message,
+                code: err.code,
+                host: cfg?.host
+            }
+        });
+        sentByEmail = false;
+    }
+    
+    // Fallback a simulación si no se pudo enviar y no estamos forzando producción
+    if (!sentByEmail && isEmailSimulationEnabled()) {
+        console.log('=============================================');
+        console.log(`✉️  [EMAIL SIMULADO] Recuperación para ${to}:`);
+        console.log(`🔐  Tu código de recuperación es: ${code}`);
+        console.log('=============================================');
+    }
+    
     return sentByEmail;
 }
 
@@ -642,7 +731,17 @@ const resendVerifyCode = async (req, res) => {
         }
 
         const user = await User.findOne({ email }).exec();
-        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+        if (!user) {
+            // Enviar alerta en lugar de decir "Usuario no encontrado"
+            const logger = child();
+            await sendAccountNotFoundEmail({ to: email, action: 'otp', logger });
+            
+            // Simular respuesta exitosa para evitar enumeración
+            return res.json({ 
+                message: 'Código reenviado', 
+                retryAfterSec: Math.ceil(resendCooldownMs / 1000) 
+            });
+        }
         if (user.isVerified) return res.status(400).json({ message: 'El usuario ya está verificado' });
 
         const waitSec = remainingCooldownSec(user.verificationCodeSentAt);
@@ -1101,8 +1200,16 @@ const requestPasswordRecovery = async (req, res) => {
         const user = await User.findOne({ email }).exec();
         
         if (!user) {
-            // Seguridad: no revelar si el email existe
-            return res.json({ message: 'Si el correo existe, se enviarán instrucciones.' });
+            // Seguridad: Enviar correo de alerta y engañar al frontend
+            const logger = child();
+            await sendAccountNotFoundEmail({ to: email, action: 'recovery', logger });
+            
+            // Devolvemos exactamente la misma respuesta que si existiera
+            return res.json({ 
+                message: 'Código enviado correctamente.', 
+                method: method || 'email', 
+                expiresIn: '15 min' 
+            });
         }
 
         const now = new Date();
@@ -1125,17 +1232,18 @@ const requestPasswordRecovery = async (req, res) => {
         await user.save();
 
         // Simulación de envío según método
-        let msg = '';
         if (method === 'sms') {
-            msg = `[SIMULACIÓN SMS] Código de recuperación: ${token}`;
-            console.log(msg);
+            console.log(`[SIMULACIÓN SMS] Código de recuperación: ${token}`);
         } else if (method === 'call') {
-            msg = `[SIMULACIÓN LLAMADA] Su código es: ${token.split('').join('... ')}`;
-            console.log(msg);
+            console.log(`[SIMULACIÓN LLAMADA] Su código es: ${token.split('').join('... ')}`);
         } else {
-            // Email (implementar con nodemailer si se desea, por ahora log)
-            msg = `[SIMULACIÓN EMAIL] Código de recuperación: ${token}`;
-            console.log(msg);
+            // Método 'email' (o por defecto) - Envío Real
+            const sent = await sendRecoveryEmail({ to: email, code: token, logger: recoLogger });
+            
+            // Si falla el envío y estamos en producción (y no en modo simulación), devolvemos error
+            if (!sent && process.env.NODE_ENV === 'production' && !isEmailSimulationEnabled()) {
+                return res.status(503).json({ message: 'No se pudo enviar el correo de recuperación. Intenta más tarde.' });
+            }
         }
 
         return res.json({ 
@@ -1212,9 +1320,7 @@ const verifyRecoveryStep = async (req, res) => {
     }
 };
 
-/**
- * RECO: Paso 3 - Reset Final
- */
+
 const resetPassword = async (req, res) => {
     try {
         const { email, resetToken, newPassword } = req.body;
