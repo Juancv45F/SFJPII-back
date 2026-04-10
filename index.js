@@ -16,6 +16,7 @@ const path = require('path');
 const { requestLogger, errorHandler } = require('./src/middlewares/logging');
 const { child } = require('./src/utils/logger');
 const session = require('express-session');
+const MongoStore = require('connect-mongo');
 const superAdminRoutes = require('./src/routes/superAdminRoutes');
 
 
@@ -141,6 +142,12 @@ app.use('/superadmin', session({
     resave: false,
     saveUninitialized: false,
     rolling: true,
+    store: MongoStore.create({
+        mongoUrl: process.env.MONGODB_URI,
+        dbName: process.env.MONGO_DB_NAME || 'sfjpii',
+        collectionName: 'sessions_superadmin',
+        ttl: 8 * 60 * 60 // 8 horas
+    }),
     cookie: {
         httpOnly: true,
         sameSite: 'lax',
