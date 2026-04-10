@@ -16,12 +16,31 @@ const path = require('path');
 const { requestLogger, errorHandler } = require('./src/middlewares/logging');
 const { child } = require('./src/utils/logger');
 const session = require('express-session');
-const MongoStore = require('connect-mongo');
+const connectMongo = require('connect-mongo');
 const superAdminRoutes = require('./src/routes/superAdminRoutes');
 
 
 
 const app = express();
+const MongoStore = connectMongo?.default || connectMongo;
+
+function createSuperAdminSessionStore() {
+    const options = {
+        mongoUrl: process.env.MONGODB_URI,
+        dbName: process.env.MONGO_DB_NAME || 'sfjpii',
+        collectionName: 'sessions_superadmin',
+        ttl: 8 * 60 * 60 // 8 horas
+    };
+
+    if (MongoStore && typeof MongoStore.create === 'function') {
+        return MongoStore.create(options);
+    }
+    if (typeof MongoStore === 'function') {
+        return new MongoStore(options);
+    }
+    return undefined;
+}
+
 app.set('etag', false);
 app.set('trust proxy', 1); // Confía en el primer proxy (necesario para Render/Heroku)
 app.set('views', path.join(__dirname, 'src/views'));
@@ -123,6 +142,7 @@ app.set('socketio', io);
 
 // Rutas
 const sessionSecret = process.env.SUPERADMIN_SESSION_SECRET || process.env.JWT_SECRET || 'dev_superadmin_secret';
+const superAdminSessionStore = createSuperAdminSessionStore();
 app.use('/superadmin', (req, res, next) => {
     res.setHeader('Content-Security-Policy', [
         "default-src 'self'",
@@ -142,12 +162,7 @@ app.use('/superadmin', session({
     resave: false,
     saveUninitialized: false,
     rolling: true,
-    store: MongoStore.create({
-        mongoUrl: process.env.MONGODB_URI,
-        dbName: process.env.MONGO_DB_NAME || 'sfjpii',
-        collectionName: 'sessions_superadmin',
-        ttl: 8 * 60 * 60 // 8 horas
-    }),
+    ...(superAdminSessionStore ? { store: superAdminSessionStore } : {}),
     cookie: {
         httpOnly: true,
         sameSite: 'lax',
