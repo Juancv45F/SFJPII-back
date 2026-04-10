@@ -11,6 +11,7 @@ async function sendFcmToTokens({ serverKey, tokens, notification, data }) {
 
     const chunkSize = 500;
     const invalidTokens = [];
+    const errors = [];
     let success = 0;
     let failure = 0;
 
@@ -21,7 +22,10 @@ async function sendFcmToTokens({ serverKey, tokens, notification, data }) {
                 registration_ids,
                 notification,
                 data,
-                priority: 'high'
+                priority: 'high',
+                android: {
+                    priority: 'high'
+                }
             }, {
                 headers: {
                     'Authorization': `key=${serverKey}`,
@@ -40,12 +44,17 @@ async function sendFcmToTokens({ serverKey, tokens, notification, data }) {
                     invalidTokens.push(registration_ids[j]);
                 }
             }
-        } catch {
+        } catch (err) {
             failure += registration_ids.length;
+            errors.push({
+                message: err?.message || 'fcm_send_error',
+                status: err?.response?.status,
+                response: err?.response?.data
+            });
         }
     }
 
-    return { invalidTokens, success, failure };
+    return { invalidTokens, success, failure, errors };
 }
 
 async function revokeUserTokens(userId, tokens) {
@@ -60,8 +69,11 @@ async function revokeUserTokens(userId, tokens) {
 }
 
 async function sendPushToUser({ userId, title, body, data }) {
-    const serverKey = process.env.FCM_SERVER_KEY;
-    if (!serverKey) return;
+    const serverKey = process.env.FCM_SERVER_KEY || process.env.FIREBASE_SERVER_KEY || process.env.FCM_LEGACY_SERVER_KEY;
+    if (!serverKey) {
+        try { console.warn('[PUSH] FCM key faltante en variables de entorno'); } catch {}
+        return;
+    }
     const user = await User.findById(String(userId)).select('pushTokens').exec();
     if (!user || !Array.isArray(user.pushTokens)) return;
     const tokens = user.pushTokens.filter(t => t && !t.revokedAt).map(t => t.token);
@@ -74,11 +86,17 @@ async function sendPushToUser({ userId, title, body, data }) {
     if (result.invalidTokens.length) {
         await revokeUserTokens(String(userId), result.invalidTokens);
     }
+    if (Array.isArray(result.errors) && result.errors.length) {
+        try { console.error('[PUSH] Errores al enviar push a usuario', { userId: String(userId), errors: result.errors }); } catch {}
+    }
 }
 
 async function sendPushToAdmins({ title, body, data }) {
-    const serverKey = process.env.FCM_SERVER_KEY;
-    if (!serverKey) return;
+    const serverKey = process.env.FCM_SERVER_KEY || process.env.FIREBASE_SERVER_KEY || process.env.FCM_LEGACY_SERVER_KEY;
+    if (!serverKey) {
+        try { console.warn('[PUSH] FCM key faltante en variables de entorno'); } catch {}
+        return;
+    }
     const admins = await User.find({ role: 'admin' }).select('pushTokens').exec();
     if (!Array.isArray(admins) || !admins.length) return;
     for (const admin of admins) {
@@ -92,6 +110,21 @@ async function sendPushToAdmins({ title, body, data }) {
         if (result.invalidTokens.length) {
             await revokeUserTokens(String(admin._id), result.invalidTokens);
         }
+        if (Array.isArray(result.errors) && result.errors.length) {
+            try { console.error('[PUSH] Errores al enviar push a admin', { adminId: String(admin._id), errors: result.errors }); } catch {}
+        }
+    }
+}
+
+function getMensajeEstadoCliente(estado) {
+    switch (String(estado || '').toLowerCase()) {
+        case 'pendiente': return 'Tu pedido está pendiente de confirmación';
+        case 'pagado': return 'Tu pedido fue marcado como pagado';
+        case 'en_camino': return 'Tu pedido está en camino';
+        case 'enviado': return 'Tu pedido está en camino';
+        case 'entregado': return 'Tu pedido ha sido entregado';
+        case 'cancelado': return 'Tu pedido ha sido cancelado';
+        default: return '';
     }
 }
 
@@ -348,7 +381,7 @@ const actualizarEstadoPedido = async (req, res) => {
     try {
         const { id } = req.params;
         const { estado } = req.body;
-        const validos = ['pendiente', 'enviado', 'entregado', 'cancelado'];
+        const validos = ['pendiente', 'pagado', 'en_camino', 'enviado', 'entregado', 'cancelado'];
 
         if (!validos.includes(estado)) {
             return res.status(400).json({ ok: false, message: 'Estado no válido' });
@@ -394,12 +427,7 @@ const actualizarEstadoPedido = async (req, res) => {
             // 2. Notificación específica para el cliente (Push simulado)
             // Se asume que el cliente escucha en una sala con su userId
             const clienteId = String(pedido.userId?._id || pedido.userId);
-            let mensajeCliente = '';
-            switch(estado) {
-                case 'enviado': mensajeCliente = 'Tu pedido está en camino'; break;
-                case 'entregado': mensajeCliente = 'Tu pedido ha sido entregado'; break;
-                case 'cancelado': mensajeCliente = 'Tu pedido ha sido cancelado'; break;
-            }
+            const mensajeCliente = getMensajeEstadoCliente(estado);
             if (mensajeCliente) {
                 io.to(clienteId).emit('notificacion_push_cliente', {
                     titulo: 'Actualización de Pedido',
@@ -426,12 +454,7 @@ const actualizarEstadoPedido = async (req, res) => {
 
         const clienteId = String(pedido.userId?._id || pedido.userId);
         if (estado) {
-            let mensajeCliente = '';
-            switch(estado) {
-                case 'enviado': mensajeCliente = 'Tu pedido está en camino'; break;
-                case 'entregado': mensajeCliente = 'Tu pedido ha sido entregado'; break;
-                case 'cancelado': mensajeCliente = 'Tu pedido ha sido cancelado'; break;
-            }
+            const mensajeCliente = getMensajeEstadoCliente(estado);
             if (mensajeCliente) {
                 await sendPushToUser({
                     userId: clienteId,
