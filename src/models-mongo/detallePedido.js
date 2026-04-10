@@ -6,7 +6,8 @@ const DetallePedidoSchema = new mongoose.Schema({
   imagen: { type: String },
   precio_unitario: { type: Number, required: true },
   cantidad: { type: Number, required: true, min: 1 },
-  subtotal: { type: Number, required: true }
+  subtotal: { type: Number, required: true },
+  descuento: { type: Number, default: 0 }
 }, { _id: false });
 
 module.exports = DetallePedidoSchema;

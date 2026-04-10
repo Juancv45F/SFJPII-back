@@ -187,7 +187,11 @@ const crearPedido = async (req, res) => {
                     throw new Error(`Stock insuficiente para: ${prod.nombre}. Disponibles: ${prod.stock}`);
                 }
 
-                const precio_unitario = prod.precio;
+                const descuento = Number(prod.descuento || 0);
+                const precio_unitario = (descuento > 0) 
+                    ? prod.precio * (1 - (descuento / 100))
+                    : prod.precio;
+                
                 const subtotal = precio_unitario * item.cantidad;
                 total += subtotal;
 
@@ -197,7 +201,8 @@ const crearPedido = async (req, res) => {
                     imagen: prod.imagen,
                     precio_unitario,
                     cantidad: item.cantidad,
-                    subtotal
+                    subtotal,
+                    descuento: descuento // Guardamos el descuento aplicado
                 });
             }
 
