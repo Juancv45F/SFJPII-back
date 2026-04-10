@@ -1,39 +1,25 @@
 require('dotenv').config();
-const { sequelize } = require('../config/database');
-const { User, Ubicacion, Pedido, DetallePedido } = require('../models');
+const mongoose = require('mongoose');
+const { connect } = require('../config/mongoose');
+const User = require('../models-mongo/user');
+const Producto = require('../models-mongo/product');
+const Pedido = require('../models-mongo/pedido');
 
-const cleanDatabase = async () => {
-    try {
-        await sequelize.authenticate();
-        console.log('>>> Conexión establecida para limpieza.');
-
-        console.log('>>> Iniciando limpieza de datos de prueba...');
-
-        // 1. Eliminar DetallePedido (Tabla intermedia)
-        await DetallePedido.destroy({ where: {}, truncate: false });
-        console.log('✅ DetallePedido eliminado');
-
-        // 2. Eliminar Pedidos
-        await Pedido.destroy({ where: {}, truncate: false });
-        console.log('✅ Pedidos eliminados');
-
-        // 3. Eliminar Ubicaciones
-        await Ubicacion.destroy({ where: {}, truncate: false });
-        console.log('✅ Ubicaciones eliminadas');
-
-        // 4. Eliminar Usuarios
-        await User.destroy({ where: {}, truncate: false });
-        console.log('✅ Usuarios eliminados');
-
-        console.log('>>> Limpieza completada exitosamente.');
-        console.log('>>> Se han conservado: ROLES, CATEGORÍAS y PRODUCTOS.');
-        
-    } catch (error) {
-        console.error('❌ Error al limpiar la base de datos:', error);
-    } finally {
-        await sequelize.close();
-        process.exit();
-    }
-};
+async function cleanDatabase() {
+  try {
+    await connect();
+    await Promise.all([
+      Pedido.deleteMany({}),
+      Producto.deleteMany({}),
+      User.deleteMany({})
+    ]);
+    console.log('Limpieza completada');
+  } catch (error) {
+    console.error(error);
+  } finally {
+    await mongoose.disconnect();
+    process.exit(0);
+  }
+}
 
 cleanDatabase();

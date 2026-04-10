@@ -1,0 +1,18 @@
+extends ./layout
+
+block content
+  - var title = 'Login Super Admin'
+  .card(style="max-width:520px;margin:40px auto;")
+    h2(style="margin:0 0 6px 0;") Iniciar sesión
+    p.muted(style="margin:0 0 18px 0;") Acceso exclusivo para super admin
+    if error
+      p(style="color:#fca5a5;margin:0 0 12px 0;")= error
+    form(method="post" action="/superadmin/login")
+      label.small(for="email") Correo
+      input#email(type="email" name="email" autocomplete="username" required)
+      div(style="height:10px;")
+      label.small(for="password") Contraseña
+      input#password(type="password" name="password" autocomplete="current-password" required)
+      div(style="height:14px;")
+      button.btnPrimary(type="submit") Entrar
+

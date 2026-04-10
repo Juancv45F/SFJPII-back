@@ -1,0 +1,54 @@
+extends ./layout
+
+block content
+  - var title = 'Logs'
+  h2(style="margin:8px 0 14px 0;") Logs
+  .card
+    form(method="get" action="/superadmin/logs")
+      .row
+        div
+          label.small(for="file") Archivo
+          select#file(name="file")
+            if files && files.length
+              each f in files
+                option(value=f selected=(f===file))= f
+            else
+              option(value="") Sin archivos
+        div
+          label.small(for="lines") Líneas
+          input#lines(type="number" name="lines" value=(lines || 500) min="100" max="2000")
+        div(style="display:flex;align-items:flex-end;")
+          button(type="submit") Cargar
+
+  div(style="height:14px;")
+  .card
+    table
+      thead
+        tr
+          th Tiempo
+          th Nivel
+          th Evento
+          th Contexto
+      tbody
+        if !entries || entries.length === 0
+          tr
+            td(colspan="4" class="muted") Sin datos
+        else
+          each e in entries
+            - var cls = e.level === 'info' ? 'ok' : (e.level === 'warn' ? 'warn' : 'bad')
+            tr
+              td.small.muted= e.timestamp || ''
+              td
+                span.pill(class=cls)= e.level || ''
+              td
+                div(style="font-weight:700;")= e.message || ''
+                if e.method && e.path
+                  div.muted.small= (e.method + ' ' + e.path)
+                if e.status != null
+                  div.muted.small= 'status=' + e.status + (e.responseTimeMs != null ? (' · ' + e.responseTimeMs + 'ms') : '')
+              td.small.muted
+                if e.correlationId
+                  div= 'cid=' + e.correlationId
+                if e.userId
+                  div= 'uid=' + e.userId
+

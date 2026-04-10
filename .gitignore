@@ -6,7 +6,9 @@ node_modules/
 
 # Logs
 npm-debug.log*
+logs/
 
 # Environment variables
 .env.development
 .env.production
+/src/public/uploads

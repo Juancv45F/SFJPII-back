@@ -1,0 +1,54 @@
+doctype html
+html(lang="es" data-theme=(theme || 'dark'))
+  head
+    meta(charset="utf-8")
+    meta(name="viewport" content="width=device-width, initial-scale=1")
+    title= title || 'Super Admin'
+    style.
+      :root { --bg:#121212; --surface:#121212; --card:#1E1E1E; --muted:#E0E0E0; --text:#E0E0E0; --line:#333333; --accent:#90CAF9; --danger:#ef4444; --warn:#FFB74D; }
+      html[data-theme="light"] { --bg:#F8F8F8; --surface:#F8F8F8; --card:#E3F2FD; --muted:#333333; --text:#333333; --line:rgba(0, 86, 179, 0.25); --accent:#0056B3; --warn:#FF9800; }
+      body { margin:0; font-family: Arial, Helvetica, sans-serif; background:var(--bg); color:var(--text); }
+      a { color: var(--text); text-decoration:none; }
+      .wrap { max-width: 1150px; margin:0 auto; padding: 18px; }
+      .top { display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); background:rgba(255,255,255,0.02); }
+      .brand { font-weight:700; letter-spacing:0.3px; }
+      .nav a { margin-left: 14px; color: var(--muted); }
+      .nav a:hover { color: var(--text); }
+      .card { background: var(--card); border:1px solid var(--line); border-radius: 14px; padding: 16px; }
+      .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .kpi { display:flex; align-items:flex-start; justify-content:space-between; gap: 12px; }
+      .kpi .label { color: var(--muted); font-size: 12px; }
+      .kpi .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+      .muted { color: var(--muted); }
+      input, select { background:var(--surface); color:var(--text); border:1px solid var(--line); border-radius: 10px; padding: 10px 12px; width:100%; box-sizing:border-box; }
+      button { background: rgba(255,255,255,0.06); border:1px solid var(--line); color:var(--text); border-radius: 10px; padding: 10px 12px; cursor:pointer; }
+      button:hover { background: rgba(255,255,255,0.10); }
+      .btnPrimary { border-color: var(--accent); }
+      .btnDanger { border-color: rgba(239,68,68,0.45); }
+      .btnWarn { border-color: var(--warn); }
+      table { width:100%; border-collapse: collapse; }
+      th, td { border-bottom:1px solid var(--line); padding: 10px 8px; text-align:left; vertical-align: top; }
+      th { color: var(--muted); font-weight: 700; font-size: 12px; }
+      .pill { display:inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; border:1px solid var(--line); color: var(--muted); }
+      .pill.ok { border-color: var(--accent); color: var(--accent); }
+      .pill.warn { border-color: var(--warn); color: var(--warn); }
+      .pill.bad { border-color: rgba(239,68,68,0.45); color: #fca5a5; }
+      .row { display:flex; gap: 10px; align-items:center; }
+      .row > * { flex: 1; }
+      .actions { display:flex; flex-wrap:wrap; gap: 8px; }
+      .actions form { margin:0; }
+      .small { font-size: 12px; }
+      canvas { width: 100%; display: block; }
+  body
+    .top
+      .wrap
+        .row
+          .brand SFJPII · Super Admin
+          if superAdmin
+            .nav
+              a(href="/superadmin") Dashboard
+              a(href="/superadmin/users") Usuarios
+              a(href="/superadmin/logs") Logs
+              a(href="/superadmin/logout") Salir
+    .wrap
+      block content
