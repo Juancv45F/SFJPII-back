@@ -104,6 +104,16 @@ function isTokenRevokableFromFcmV1Error(errorData) {
     return details.some(d => d && d.errorCode === 'UNREGISTERED');
 }
 
+function normalizeFcmData(data) {
+    if (!data || typeof data !== 'object') return {};
+    const out = {};
+    for (const [key, value] of Object.entries(data)) {
+        if (value === undefined || value === null) continue;
+        out[String(key)] = typeof value === 'string' ? value : String(value);
+    }
+    return out;
+}
+
 async function sendFcmToTokens({ tokens, notification, data }) {
     const cleanTokens = Array.from(new Set((tokens || []).filter(Boolean).map(t => String(t))));
     if (!cleanTokens.length) return { invalidTokens: [], success: 0, failure: 0, errors: [] };
@@ -139,7 +149,7 @@ async function sendFcmToTokens({ tokens, notification, data }) {
                     message: {
                         token,
                         notification,
-                        data,
+                        data: normalizeFcmData(data),
                         android: {
                             priority: 'HIGH'
                         }
