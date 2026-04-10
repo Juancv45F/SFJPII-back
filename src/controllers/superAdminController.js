@@ -9,7 +9,7 @@ const LOG_DIR = path.join(__dirname, '../../logs');
 const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
 
 function getClientIp(req) {
-  let ip = req?.ip || req?.headers?.['x-forwarded-for'] || req?.connection?.remoteAddress;
+  let ip = req?.headers?.['x-forwarded-for'] || req?.ip || req?.connection?.remoteAddress;
   if (Array.isArray(ip)) ip = ip[0];
   if (typeof ip === 'string' && ip.includes(',')) ip = ip.split(',')[0].trim();
   return ip ? String(ip) : '';

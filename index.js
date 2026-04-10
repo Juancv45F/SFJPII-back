@@ -25,18 +25,25 @@ const app = express();
 const MongoStore = connectMongo?.default || connectMongo;
 
 function createSuperAdminSessionStore() {
-    const options = {
-        mongoUrl: process.env.MONGODB_URI,
-        dbName: process.env.MONGO_DB_NAME || 'sfjpii',
-        collectionName: 'sessions_superadmin',
-        ttl: 8 * 60 * 60 // 8 horas
-    };
+    try {
+        const options = {
+            mongoUrl: process.env.MONGODB_URI,
+            dbName: process.env.MONGO_DB_NAME || 'sfjpii',
+            collectionName: 'sessions_superadmin',
+            ttl: 8 * 60 * 60 // 8 horas
+        };
 
-    if (MongoStore && typeof MongoStore.create === 'function') {
-        return MongoStore.create(options);
-    }
-    if (typeof MongoStore === 'function') {
-        return new MongoStore(options);
+        if (MongoStore && typeof MongoStore.create === 'function') {
+            return MongoStore.create(options);
+        }
+        if (typeof MongoStore === 'function') {
+            return new MongoStore(options);
+        }
+    } catch (e) {
+        try {
+            const logger = child({ component: 'session' });
+            logger.error('superadmin_store_init_error', { context: { message: e.message } });
+        } catch {}
     }
     return undefined;
 }
@@ -159,6 +166,7 @@ app.use('/superadmin', (req, res, next) => {
 app.use('/superadmin', session({
     name: 'sfjpii_superadmin',
     secret: sessionSecret,
+    proxy: true,
     resave: false,
     saveUninitialized: false,
     rolling: true,
@@ -166,7 +174,7 @@ app.use('/superadmin', session({
     cookie: {
         httpOnly: true,
         sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        secure: 'auto',
         path: '/superadmin',
         maxAge: 8 * 60 * 60 * 1000
     }
