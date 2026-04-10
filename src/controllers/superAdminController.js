@@ -80,7 +80,7 @@ async function renderLogin(req, res) {
 
 async function handleLogin(req, res) {
   try {
-    const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const password = typeof req.body?.password === 'string' ? req.body.password.trim() : '';
     if (!email || !password) {
       return res.status(400).render('superadmin/login', { error: 'Datos inválidos' });
