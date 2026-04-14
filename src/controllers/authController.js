@@ -767,7 +767,7 @@ const resendVerifyCode = async (req, res) => {
     }
 };
 
-// LOGIN (Para entrar después de verificar)
+// LOGIN 
 const login = async (req, res) => {
     try {
         let { email, password } = req.body;
