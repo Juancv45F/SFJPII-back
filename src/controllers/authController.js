@@ -416,7 +416,6 @@ async function sendRecoveryEmail({ to, code, logger }) {
     try {
         const httpPreferred = !!getHttpEmailProvider();
         if (httpPreferred) {
-            // Esto usará Brevo automáticamente si lo tienes en el .env
             sentByEmail = await sendEmailViaHttp({
                 to,
                 subject: 'Recuperación de contraseña',

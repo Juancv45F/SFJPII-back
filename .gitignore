@@ -13,3 +13,4 @@ logs/
 .env.production
 /src/public/uploads
 evidencia-rutas-seguras.html
+POSTMAN_GUIA.md
