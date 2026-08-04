@@ -26,7 +26,6 @@ function getCookie(req, name) {
 
 const validateToken = async (req, res, next) => {
     // Obtener el token del encabezado (Header)
-    // Se espera que venga así: "x-token": "eyJhbGciOiJIUz..."
     const fromXToken = req.header('x-token');
     const authorization = req.header('authorization');
     const fromAuthorization =
@@ -78,7 +77,7 @@ const validateToken = async (req, res, next) => {
 
         req.rol = user.role;
 
-        next(); // ¡Pase usted!
+        next(); // Continuar con siguiente middleware o controlador
 
     } catch (error) {
         return res.status(401).json({ message: 'Token no válido' });

@@ -35,9 +35,11 @@ router.post('/mfa/totp/reset/verify', [validateToken], resetTotpVerify);
 router.get('/recovery/questions', [validateToken], getRecoveryQuestionsStatus);
 router.put('/recovery/questions', [validateToken], updateRecoveryQuestions);
 
+// Preferencias del usuario
 router.get('/preferences', [validateToken], getPreferences);
 router.put('/preferences', [validateToken], updatePreferences);
 
+// Siones del usuario actual
 router.get('/sessions', [validateToken], listSessions);
 router.post('/sessions/revoke', [validateToken], revokeSession);
 router.post('/sessions/revoke-others', [validateToken], revokeOtherSessions);
