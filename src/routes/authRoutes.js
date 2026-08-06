@@ -7,7 +7,7 @@ const { authLimiter } = require('../middlewares/security');
 // Registro (Recibe Datos Personales + Ubicación + Captcha)
 router.post('/register', [authLimiter], register);
 
-// Verificación SMS
+// Verificación code
 router.post('/verify', verifyCode);
 
 router.post('/verify/resend', resendVerifyCode);

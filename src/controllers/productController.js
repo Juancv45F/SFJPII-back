@@ -1,5 +1,42 @@
+const mongoose = require('mongoose');
 const Producto = require('../models-mongo/product');
 const cloudinary = require('../config/cloudinary');
+
+function normalizeCategoriaInput(categoria, fallbackCategoria, categoriaId) {
+    if (!categoria) return fallbackCategoria;
+
+    let categoriaObj;
+    try {
+        categoriaObj = typeof categoria === 'string' ? JSON.parse(categoria) : categoria;
+    } catch (e) {
+        categoriaObj = { nombre: categoria, activa: true };
+    }
+
+    if (!categoriaObj || typeof categoriaObj !== 'object') {
+        return fallbackCategoria;
+    }
+
+    const nombre = typeof categoriaObj.nombre === 'string' ? categoriaObj.nombre.trim() : '';
+    if (!nombre) return fallbackCategoria;
+
+    const out = {
+        nombre,
+        descripcion: typeof categoriaObj.descripcion === 'string' ? categoriaObj.descripcion.trim() : '',
+        activa: typeof categoriaObj.activa === 'boolean' ? categoriaObj.activa : true
+    };
+
+    if (categoriaObj._id && mongoose.Types.ObjectId.isValid(String(categoriaObj._id))) {
+        out._id = new mongoose.Types.ObjectId(String(categoriaObj._id));
+    } else if (categoriaId && mongoose.Types.ObjectId.isValid(String(categoriaId))) {
+        out._id = new mongoose.Types.ObjectId(String(categoriaId));
+    } else if (fallbackCategoria && fallbackCategoria._id) {
+        out._id = fallbackCategoria._id;
+    } else {
+        out._id = new mongoose.Types.ObjectId();
+    }
+
+    return out;
+}
 
 const buscarProductos = async (req, res) => {
     try {
@@ -139,7 +176,7 @@ const obtenerCategorias = async (req, res) => {
 
 const crearProducto = async (req, res) => {
     try {
-        const { nombre, descripcion, precio, descuento, stock, categoria } = req.body;
+        const { nombre, descripcion, precio, descuento, stock, categoria, categoriaId } = req.body;
         let imagenUrl;
         if (req.file) {
             const b64 = req.file.buffer.toString('base64');
@@ -196,14 +233,13 @@ const crearProducto = async (req, res) => {
             });
         }
 
-        // Parsear categoría si viene como string (desde FormData)
-        let categoriaObj = undefined;
-        if (categoria) {
-            try {
-                categoriaObj = typeof categoria === 'string' ? JSON.parse(categoria) : categoria;
-            } catch (e) {
-                categoriaObj = { nombre: categoria, activa: true };
-            }
+        // Normalizar categoría para garantizar _id requerido por el esquema embebido
+        const categoriaObj = normalizeCategoriaInput(categoria, undefined, categoriaId);
+        if (!categoriaObj) {
+            return res.status(400).json({
+                ok: false,
+                message: 'La categoría es obligatoria y debe tener al menos un nombre'
+            });
         }
 
         const nuevoProducto = await Producto.create({
@@ -233,7 +269,7 @@ const crearProducto = async (req, res) => {
 const editarProducto = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, descripcion, precio, descuento, stock, categoria } = req.body;
+        const { nombre, descripcion, precio, descuento, stock, categoria, categoriaId } = req.body;
 
         const producto = await Producto.findById(id).exec();
 
@@ -299,15 +335,8 @@ const editarProducto = async (req, res) => {
             });
         }
 
-        // Parsear categoría si viene como string
-        let categoriaObj = producto.categoria;
-        if (categoria) {
-            try {
-                categoriaObj = typeof categoria === 'string' ? JSON.parse(categoria) : categoria;
-            } catch (e) {
-                categoriaObj = { nombre: categoria, activa: true };
-            }
-        }
+        // Normalizar categoría y preservar _id actual si el frontend no lo envía
+        const categoriaObj = normalizeCategoriaInput(categoria, producto.categoria, categoriaId);
 
         const actualizado = await Producto.findByIdAndUpdate(id, {
             nombre,

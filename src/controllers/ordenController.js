@@ -3,49 +3,181 @@ const Pedido = require('../models-mongo/pedido');
 const Producto = require('../models-mongo/product');
 const User = require('../models-mongo/user');
 const axios = require('axios');
+const fs = require('fs');
+const crypto = require('crypto');
 
 
-async function sendFcmToTokens({ serverKey, tokens, notification, data }) {
+let fcmAccessTokenCache = { token: '', expiresAt: 0 };
+let fcmServiceAccountCache = null;
+
+function base64UrlEncode(input) {
+    return Buffer.from(input)
+        .toString('base64')
+        .replace(/=/g, '')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_');
+}
+
+function getFcmServiceAccount() {
+    if (fcmServiceAccountCache) return fcmServiceAccountCache;
+
+    let rawJson = process.env.FCM_SERVICE_ACCOUNT_JSON;
+    if (!rawJson && process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        rawJson = fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8');
+    }
+
+    if (!rawJson) {
+        throw new Error('FCM service account faltante. Define FCM_SERVICE_ACCOUNT_JSON o GOOGLE_APPLICATION_CREDENTIALS');
+    }
+
+    const parsed = JSON.parse(rawJson);
+    if (!parsed.client_email || !parsed.private_key) {
+        throw new Error('FCM service account inválida: faltan client_email/private_key');
+    }
+
+    parsed.private_key = String(parsed.private_key).replace(/\\n/g, '\n');
+    fcmServiceAccountCache = parsed;
+    return parsed;
+}
+
+async function getFcmAccessToken() {
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (fcmAccessTokenCache.token && fcmAccessTokenCache.expiresAt - 60 > nowSec) {
+        return fcmAccessTokenCache.token;
+    }
+
+    const sa = getFcmServiceAccount();
+    const iat = nowSec;
+    const exp = iat + 3600;
+    const header = { alg: 'RS256', typ: 'JWT' };
+    const payload = {
+        iss: sa.client_email,
+        scope: 'https://www.googleapis.com/auth/firebase.messaging',
+        aud: 'https://oauth2.googleapis.com/token',
+        iat,
+        exp
+    };
+
+    const unsignedToken = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(payload))}`;
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(unsignedToken);
+    signer.end();
+    const signature = signer.sign(sa.private_key, 'base64')
+        .replace(/=/g, '')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_');
+    const assertion = `${unsignedToken}.${signature}`;
+
+    const tokenResp = await axios.post(
+        'https://oauth2.googleapis.com/token',
+        new URLSearchParams({
+            grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            assertion
+        }).toString(),
+        {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 8000
+        }
+    );
+
+    const accessToken = tokenResp?.data?.access_token;
+    const expiresIn = Number(tokenResp?.data?.expires_in || 3600);
+    if (!accessToken) throw new Error('No se pudo obtener access_token de Google OAuth');
+
+    fcmAccessTokenCache = {
+        token: accessToken,
+        expiresAt: nowSec + expiresIn
+    };
+    return accessToken;
+}
+
+function getFcmProjectId() {
+    if (process.env.FCM_PROJECT_ID) return process.env.FCM_PROJECT_ID;
+    const sa = getFcmServiceAccount();
+    if (sa.project_id) return sa.project_id;
+    throw new Error('FCM_PROJECT_ID faltante y project_id no presente en service account');
+}
+
+function isTokenRevokableFromFcmV1Error(errorData) {
+    const details = errorData?.error?.details;
+    if (!Array.isArray(details)) return false;
+    return details.some(d => d && d.errorCode === 'UNREGISTERED');
+}
+
+function normalizeFcmData(data) {
+    if (!data || typeof data !== 'object') return {};
+    const out = {};
+    for (const [key, value] of Object.entries(data)) {
+        if (value === undefined || value === null) continue;
+        out[String(key)] = typeof value === 'string' ? value : String(value);
+    }
+    return out;
+}
+
+async function sendFcmToTokens({ tokens, notification, data }) {
     const cleanTokens = Array.from(new Set((tokens || []).filter(Boolean).map(t => String(t))));
-    if (!serverKey || !cleanTokens.length) return { invalidTokens: [], success: 0, failure: 0 };
+    if (!cleanTokens.length) return { invalidTokens: [], success: 0, failure: 0, errors: [] };
 
-    const chunkSize = 500;
     const invalidTokens = [];
+    const errors = [];
     let success = 0;
     let failure = 0;
+    let accessToken = '';
+    let projectId = '';
 
-    for (let i = 0; i < cleanTokens.length; i += chunkSize) {
-        const registration_ids = cleanTokens.slice(i, i + chunkSize);
+    try {
+        accessToken = await getFcmAccessToken();
+        projectId = getFcmProjectId();
+    } catch (err) {
+        return {
+            invalidTokens,
+            success,
+            failure: cleanTokens.length,
+            errors: [{
+                message: err?.message || 'fcm_auth_error',
+                status: err?.response?.status,
+                response: err?.response?.data
+            }]
+        };
+    }
+
+    for (const token of cleanTokens) {
         try {
-            const resp = await axios.post('https://fcm.googleapis.com/fcm/send', {
-                registration_ids,
-                notification,
-                data,
-                priority: 'high'
-            }, {
-                headers: {
-                    'Authorization': `key=${serverKey}`,
-                    'Content-Type': 'application/json'
+            await axios.post(
+                `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`,
+                {
+                    message: {
+                        token,
+                        notification,
+                        data: normalizeFcmData(data),
+                        android: {
+                            priority: 'HIGH'
+                        }
+                    }
                 },
-                timeout: 8000
-            });
-
-            const results = Array.isArray(resp?.data?.results) ? resp.data.results : [];
-            success += Number(resp?.data?.success || 0);
-            failure += Number(resp?.data?.failure || 0);
-            for (let j = 0; j < results.length; j += 1) {
-                const r = results[j] || {};
-                const err = r.error;
-                if (err === 'NotRegistered' || err === 'InvalidRegistration' || err === 'MissingRegistration') {
-                    invalidTokens.push(registration_ids[j]);
+                {
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 8000
                 }
+            );
+            success += 1;
+        } catch (err) {
+            failure += 1;
+            if (isTokenRevokableFromFcmV1Error(err?.response?.data)) {
+                invalidTokens.push(token);
             }
-        } catch {
-            failure += registration_ids.length;
+            errors.push({
+                message: err?.message || 'fcm_send_error',
+                status: err?.response?.status,
+                response: err?.response?.data
+            });
         }
     }
 
-    return { invalidTokens, success, failure };
+    return { invalidTokens, success, failure, errors };
 }
 
 async function revokeUserTokens(userId, tokens) {
@@ -60,13 +192,10 @@ async function revokeUserTokens(userId, tokens) {
 }
 
 async function sendPushToUser({ userId, title, body, data }) {
-    const serverKey = process.env.FCM_SERVER_KEY;
-    if (!serverKey) return;
     const user = await User.findById(String(userId)).select('pushTokens').exec();
     if (!user || !Array.isArray(user.pushTokens)) return;
     const tokens = user.pushTokens.filter(t => t && !t.revokedAt).map(t => t.token);
     const result = await sendFcmToTokens({
-        serverKey,
         tokens,
         notification: { title, body },
         data: data || {}
@@ -74,17 +203,17 @@ async function sendPushToUser({ userId, title, body, data }) {
     if (result.invalidTokens.length) {
         await revokeUserTokens(String(userId), result.invalidTokens);
     }
+    if (Array.isArray(result.errors) && result.errors.length) {
+        try { console.error('[PUSH] Errores al enviar push a usuario', { userId: String(userId), errors: result.errors }); } catch {}
+    }
 }
 
 async function sendPushToAdmins({ title, body, data }) {
-    const serverKey = process.env.FCM_SERVER_KEY;
-    if (!serverKey) return;
     const admins = await User.find({ role: 'admin' }).select('pushTokens').exec();
     if (!Array.isArray(admins) || !admins.length) return;
     for (const admin of admins) {
         const tokens = Array.isArray(admin.pushTokens) ? admin.pushTokens.filter(t => t && !t.revokedAt).map(t => t.token) : [];
         const result = await sendFcmToTokens({
-            serverKey,
             tokens,
             notification: { title, body },
             data: data || {}
@@ -92,6 +221,21 @@ async function sendPushToAdmins({ title, body, data }) {
         if (result.invalidTokens.length) {
             await revokeUserTokens(String(admin._id), result.invalidTokens);
         }
+        if (Array.isArray(result.errors) && result.errors.length) {
+            try { console.error('[PUSH] Errores al enviar push a admin', { adminId: String(admin._id), errors: result.errors }); } catch {}
+        }
+    }
+}
+
+function getMensajeEstadoCliente(estado) {
+    switch (String(estado || '').toLowerCase()) {
+        case 'pendiente': return 'Tu pedido está pendiente de confirmación';
+        case 'pagado': return 'Tu pedido fue marcado como pagado';
+        case 'en_camino': return 'Tu pedido está en camino';
+        case 'enviado': return 'Tu pedido está en camino';
+        case 'entregado': return 'Tu pedido ha sido entregado';
+        case 'cancelado': return 'Tu pedido ha sido cancelado';
+        default: return '';
     }
 }
 
@@ -348,7 +492,7 @@ const actualizarEstadoPedido = async (req, res) => {
     try {
         const { id } = req.params;
         const { estado } = req.body;
-        const validos = ['pendiente', 'enviado', 'entregado', 'cancelado'];
+        const validos = ['pendiente', 'pagado', 'en_camino', 'enviado', 'entregado', 'cancelado'];
 
         if (!validos.includes(estado)) {
             return res.status(400).json({ ok: false, message: 'Estado no válido' });
@@ -394,12 +538,7 @@ const actualizarEstadoPedido = async (req, res) => {
             // 2. Notificación específica para el cliente (Push simulado)
             // Se asume que el cliente escucha en una sala con su userId
             const clienteId = String(pedido.userId?._id || pedido.userId);
-            let mensajeCliente = '';
-            switch(estado) {
-                case 'enviado': mensajeCliente = 'Tu pedido está en camino'; break;
-                case 'entregado': mensajeCliente = 'Tu pedido ha sido entregado'; break;
-                case 'cancelado': mensajeCliente = 'Tu pedido ha sido cancelado'; break;
-            }
+            const mensajeCliente = getMensajeEstadoCliente(estado);
             if (mensajeCliente) {
                 io.to(clienteId).emit('notificacion_push_cliente', {
                     titulo: 'Actualización de Pedido',
@@ -426,12 +565,7 @@ const actualizarEstadoPedido = async (req, res) => {
 
         const clienteId = String(pedido.userId?._id || pedido.userId);
         if (estado) {
-            let mensajeCliente = '';
-            switch(estado) {
-                case 'enviado': mensajeCliente = 'Tu pedido está en camino'; break;
-                case 'entregado': mensajeCliente = 'Tu pedido ha sido entregado'; break;
-                case 'cancelado': mensajeCliente = 'Tu pedido ha sido cancelado'; break;
-            }
+            const mensajeCliente = getMensajeEstadoCliente(estado);
             if (mensajeCliente) {
                 await sendPushToUser({
                     userId: clienteId,
