@@ -615,13 +615,22 @@ const register = async (req, res) => {
         }
 
         const secretKey = process.env.RECAPTCHA_SECRET_KEY;
+        if (!secretKey) {
+            console.error('[REGISTER] RECAPTCHA_SECRET_KEY no está configurada en el servidor.');
+            return res.status(500).json({ message: 'Error de configuración del servidor (captcha).' });
+        }
         const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`;
-        
-        // Descomentar para producción:
-        const googleResponse = await axios.post(verifyUrl);
+
+        let googleResponse;
+        try {
+            googleResponse = await axios.post(verifyUrl, null, { timeout: 8000 }); // máx 8s de espera
+        } catch (captchaErr) {
+            console.error('[REGISTER] Error verificando captcha:', captchaErr.message);
+            return res.status(502).json({ message: 'No se pudo verificar el captcha. Intenta de nuevo.' });
+        }
+
         if (!googleResponse.data.success) {
-            await t.rollback();
-            return res.status(400).json({ message: 'Captcha inválido' });
+            return res.status(400).json({ message: 'Captcha inválido' }); // ya sin el "t.rollback()"
         }
         
 
@@ -1257,7 +1266,7 @@ const requestPasswordRecovery = async (req, res) => {
 };
 
 /**
- * RECO: Paso 2 - Verificar Token y Preguntas Secretas
+   - Verificar Token y Preguntas Secretas
  */
 const verifyRecoveryStep = async (req, res) => {
     try {
