@@ -615,13 +615,29 @@ const register = async (req, res) => {
         }
 
         const secretKey = process.env.RECAPTCHA_SECRET_KEY;
+        if (!secretKey) {
+            console.error('[REGISTER] RECAPTCHA_SECRET_KEY no está configurada en el servidor.');
+            return res.status(500).json({ message: 'Error de configuración del servidor (captcha).' });
+        }
         const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`;
-        
-        // Descomentar para producción:
-        const googleResponse = await axios.post(verifyUrl);
+
+        let googleResponse;
+        try {
+            googleResponse = await axios.post(verifyUrl, null, { timeout: 8000 });
+        } catch (captchaErr) {
+            console.error('[REGISTER] Error verificando captcha:', captchaErr.message);
+            return res.status(502).json({ message: 'No se pudo verificar el captcha. Intenta de nuevo.' });
+        }
+
+        // TEMPORAL: log de diagnóstico — quítalo una vez resuelto el problema
+        console.log('[REGISTER] Respuesta de Google reCAPTCHA:', googleResponse.data);
+
         if (!googleResponse.data.success) {
-            await t.rollback();
-            return res.status(400).json({ message: 'Captcha inválido' });
+            return res.status(400).json({
+                message: 'Captcha inválido',
+                // TEMPORAL: exponemos los error-codes de Google para diagnosticar. Quítalo después.
+                debugCaptchaErrors: googleResponse.data['error-codes']
+            });
         }
         
 
