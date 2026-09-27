@@ -322,9 +322,10 @@ const crearPedido = async (req, res) => {
             for (const item of productos) {
                 const prod = await Producto.findById(item.id).session(session).exec();
                 if (!prod) throw new Error(`El producto con ID ${item.id} no existe.`);
+                if (prod.solo_encargo) throw new Error('Producto exclusivo por encargo: no existe para compra inmediata.');
 
                 const updateRes = await Producto.updateOne(
-                    { _id: prod._id, stock: { $gte: item.cantidad } },
+                    { _id: prod._id, solo_encargo: { $ne: true }, stock: { $gte: item.cantidad } },
                     { $inc: { stock: -item.cantidad } }
                 ).session(session).exec();
                 if (updateRes.modifiedCount === 0) {

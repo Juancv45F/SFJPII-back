@@ -2,6 +2,12 @@ const mongoose = require('mongoose');
 const Producto = require('../models-mongo/product');
 const cloudinary = require('../config/cloudinary');
 
+function catalogoFilter(req) {
+    return req.query.encargos === 'true'
+        ? { $or: [{ solo_encargo: true }, { stock: 0 }] }
+        : { solo_encargo: { $ne: true } };
+}
+
 function normalizeCategoriaInput(categoria, fallbackCategoria, categoriaId) {
     if (!categoria) return fallbackCategoria;
 
@@ -41,7 +47,7 @@ function normalizeCategoriaInput(categoria, fallbackCategoria, categoriaId) {
 const buscarProductos = async (req, res) => {
     try {
         const { q, categoriaId, precioMin, precioMax } = req.query;
-        const filtros = {};
+        const filtros = catalogoFilter(req);
         if (q) filtros.nombre = { $regex: q, $options: 'i' };
         if (precioMin != null || precioMax != null) {
             filtros.precio = {};
@@ -73,7 +79,7 @@ const buscarProductos = async (req, res) => {
 
 const obtenerTodos = async (req, res) => {
     try {
-        const productos = await Producto.find({}).exec();
+        const productos = await Producto.find(catalogoFilter(req)).exec();
         res.json({ data: productos });
     } catch (error) {
         res.status(500).json({ message: 'Error al obtener productos' });
@@ -85,7 +91,7 @@ const actualizarStock = async (req, res) => {
         const { id } = req.params;
         const { stock } = req.body;
 
-        if (stock === undefined || isNaN(stock) || stock < 0) {
+        if (stock === undefined || !Number.isInteger(Number(stock)) || stock < 0) {
             return res.status(400).json({ message: 'El valor del stock es inválido.' });
         }
 
@@ -94,6 +100,9 @@ const actualizarStock = async (req, res) => {
             return res.status(404).json({ message: 'Producto no encontrado.' });
         }
 
+        if (producto.solo_encargo && Number(stock) !== 0) {
+            return res.status(400).json({ message: 'Los productos exclusivos por encargo deben mantener stock cero.' });
+        }
         const actualizado = await Producto.findByIdAndUpdate(
             id,
             { stock: Number(stock) },
@@ -101,7 +110,7 @@ const actualizarStock = async (req, res) => {
         ).exec();
         
         const io = req.app.get('socketio');
-        io.emit('stock_actualizado', {
+        io?.emit('stock_actualizado', {
             productoId: String(actualizado._id),
             nuevoStock: actualizado.stock
         });
@@ -127,7 +136,7 @@ const obtenerStock = async (req, res) => {
     try {
         const { id } = req.params;
 
-        const producto = await Producto.findById(id).select('nombre stock').exec();
+        const producto = await Producto.findById(id).select('nombre stock solo_encargo').exec();
 
         if (!producto) {
             return res.status(404).json({ message: 'Producto no encontrado.' });
@@ -136,7 +145,7 @@ const obtenerStock = async (req, res) => {
         res.status(200).json({
             id: String(producto._id),
             nombre: producto.nombre,
-            stock: producto.stock
+            stock: producto.stock, solo_encargo: !!producto.solo_encargo
         });
 
     } catch (error) {
@@ -195,7 +204,7 @@ const crearProducto = async (req, res) => {
             });
         }
 
-        if (!nombre || !precio || !stock) {
+        if (!nombre || precio === undefined || precio === '' || stock === undefined || stock === '') {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'Faltan campos obligatorios: nombre, precio, stock' 
@@ -211,22 +220,22 @@ const crearProducto = async (req, res) => {
         }
 
         const precioNum = parseFloat(precio);
-        const stockNum = parseInt(stock, 10);
+        const stockNum = Number(stock);
         const descuentoNum = descuento ? parseFloat(descuento) : 0;
 
-        if (isNaN(precioNum) || precioNum < 0) {
+        if (!Number.isFinite(precioNum) || precioNum <= 0) {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'El precio debe ser un número positivo' 
             });
         }
-        if (isNaN(stockNum) || stockNum < 0) {
+        if (!Number.isInteger(stockNum) || stockNum < 0) {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'El stock debe ser un número entero no negativo' 
             });
         }
-        if (descuento && (isNaN(descuentoNum) || descuentoNum < 0)) {
+        if (!Number.isFinite(descuentoNum) || descuentoNum < 0 || descuentoNum > 100) {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'El descuento debe ser un número no negativo' 
@@ -242,7 +251,10 @@ const crearProducto = async (req, res) => {
             });
         }
 
+        const soloEncargo = req.body.solo_encargo === true || req.body.solo_encargo === 'true';
+        if (soloEncargo && stockNum !== 0) return res.status(400).json({ message: 'Los productos exclusivos por encargo deben mantener stock cero.' });
         const nuevoProducto = await Producto.create({
+            solo_encargo: soloEncargo,
             nombre,
             descripcion,
             precio: precioNum,
@@ -277,7 +289,7 @@ const editarProducto = async (req, res) => {
             return res.status(404).json({ ok: false, message: 'Producto no encontrado' });
         }
 
-        if (!nombre || !precio || !stock) {
+        if (!nombre || precio === undefined || precio === '' || stock === undefined || stock === '') {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'Faltan campos obligatorios: nombre, precio, stock' 
@@ -295,22 +307,22 @@ const editarProducto = async (req, res) => {
         }
 
         const precioNum = parseFloat(precio);
-        const stockNum = parseInt(stock, 10);
+        const stockNum = Number(stock);
         const descuentoNum = descuento ? parseFloat(descuento) : 0;
 
-        if (isNaN(precioNum) || precioNum <= 0) {
+        if (!Number.isFinite(precioNum) || precioNum <= 0) {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'El precio debe ser un número positivo y mayor a 0' 
             });
         }
-        if (isNaN(stockNum) || stockNum < 0) {
+        if (!Number.isInteger(stockNum) || stockNum < 0) {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'El stock debe ser un número entero no negativo' 
             });
         }
-        if (descuento && (isNaN(descuentoNum) || descuentoNum < 0)) {
+        if (!Number.isFinite(descuentoNum) || descuentoNum < 0 || descuentoNum > 100) {
             return res.status(400).json({ 
                 ok: false, 
                 message: 'El descuento debe ser un número no negativo' 
@@ -338,7 +350,10 @@ const editarProducto = async (req, res) => {
         // Normalizar categoría y preservar _id actual si el frontend no lo envía
         const categoriaObj = normalizeCategoriaInput(categoria, producto.categoria, categoriaId);
 
+        const soloEncargo = req.body.solo_encargo === undefined ? !!producto.solo_encargo : req.body.solo_encargo === true || req.body.solo_encargo === 'true';
+        if (soloEncargo && stockNum !== 0) return res.status(400).json({ message: 'Los productos exclusivos por encargo deben mantener stock cero.' });
         const actualizado = await Producto.findByIdAndUpdate(id, {
+            solo_encargo: soloEncargo,
             nombre,
             descripcion,
             precio: precioNum,

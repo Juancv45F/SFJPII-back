@@ -9,6 +9,7 @@ const UbicacionSchema = new mongoose.Schema({
 });
 
 const CarritoItemSchema = new mongoose.Schema({
+  modo: { type: String, enum: ['compra', 'encargo'], default: 'compra' },
   productoId: { type: mongoose.Schema.Types.ObjectId, ref: 'Producto', required: true },
   nombre: { type: String },
   precio_unitario: { type: Number },
