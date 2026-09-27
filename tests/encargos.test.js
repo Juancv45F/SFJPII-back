@@ -1,0 +1,139 @@
+const express = require('express');
+const request = require('supertest');
+const jwt = require('jsonwebtoken');
+const User = require('../src/models-mongo/user');
+const Producto = require('../src/models-mongo/product');
+const Encargo = require('../src/models-mongo/encargo');
+const router = require('../src/routes/encargosRoutes');
+const carritoRouter = require('../src/routes/carritoRoutes');
+
+const uid = '111111111111111111111111';
+const pid = '222222222222222222222222';
+const eid = '333333333333333333333333';
+const aid = '444444444444444444444444';
+const query = value => {
+  const q = { exec: jest.fn().mockResolvedValue(value) };
+  for (const method of ['select', 'sort', 'populate']) q[method] = jest.fn(() => q);
+  return q;
+};
+let user;
+let app;
+const auth = (method, path) => request(app)[method](path).set('x-token', jwt.sign({ uid }, process.env.JWT_SECRET));
+const payload = () => ({ productos: [{ id: pid, cantidad: 2 }], tipo_entrega: 'recoger', solicitudId: '3e6a0a56-a2a8-4d55-9d98-a34fbc8da090' });
+const existing = (estado = 'pendiente', tipo_entrega = 'recoger') => ({ _id: eid, userId: uid, estado, tipo_entrega });
+
+beforeEach(() => {
+  process.env.JWT_SECRET = 'encargos-test-secret';
+  app = express(); app.use(express.json()); app.use('/encargos', router); app.use('/carrito', carritoRouter);
+  user = { _id: uid, role: 'cliente', ubicaciones: { id: jest.fn(() => null) }, carrito: { items: [] }, save: jest.fn().mockResolvedValue() };
+  jest.spyOn(User, 'findById').mockImplementation(() => query(user));
+  jest.spyOn(Producto, 'find').mockImplementation(() => query([{ _id: pid, nombre: 'Medicamento', precio: 100, descuento: 10, stock: 0 }]));
+  jest.spyOn(Encargo, 'findOne').mockImplementation(() => query(null));
+  jest.spyOn(Encargo, 'create').mockImplementation(async data => ({ _id: eid, ...data }));
+  jest.spyOn(Encargo, 'find').mockImplementation(() => query([]));
+  jest.spyOn(Encargo, 'findOneAndUpdate').mockImplementation(() => query({ ...existing(), estado: 'cancelado' }));
+});
+afterEach(() => jest.restoreAllMocks());
+
+test('rechaza solicitudes anónimas', async () => {
+  expect((await request(app).get('/encargos')).status).toBe(401);
+});
+test('crea un encargo agotado con precio del servidor y propietario autenticado', async () => {
+  const res = await auth('post', '/encargos').send({ ...payload(), userId: aid, total_estimado: 1 });
+  expect(res.status).toBe(201);
+  expect(res.body.data).toMatchObject({ userId: uid, total_estimado: 180, tipo_entrega: 'recoger' });
+  expect(res.body.data.items[0]).toMatchObject({ productoId: pid, cantidad: 2, precio_unitario: 90 });
+});
+test('solo usa una dirección guardada del propietario', async () => {
+  expect((await auth('post', '/encargos').send({ ...payload(), tipo_entrega: 'domicilio', ubicacionId: aid })).status).toBe(400);
+  expect(Encargo.create).not.toHaveBeenCalled();
+  user.ubicaciones.id.mockReturnValue({ _id: aid, calle: 'Centro', numero: '10', codigo_postal: '20000', alias: 'Casa' });
+  const res = await auth('post', '/encargos').send({ ...payload(), tipo_entrega: 'domicilio', ubicacionId: aid, ubicacion: { calle: 'Falsa' } });
+  expect(res.status).toBe(201);
+  expect(res.body.data.ubicacion.calle).toBe('Centro');
+});
+test.each([0, -1, 1.5, 1000, 'x'])('rechaza cantidad inválida %s', async cantidad => {
+  const res = await auth('post', '/encargos').send({ ...payload(), productos: [{ id: pid, cantidad }] });
+  expect(res.status).toBe(400); expect(Encargo.create).not.toHaveBeenCalled();
+});
+test('rechaza productos repetidos o inexistentes', async () => {
+  expect((await auth('post', '/encargos').send({ ...payload(), productos: [{ id: pid, cantidad: 1 }, { id: pid, cantidad: 2 }] })).status).toBe(400);
+  Producto.find.mockImplementation(() => query([]));
+  expect((await auth('post', '/encargos').send(payload())).status).toBe(400);
+});
+test('un reintento devuelve el encargo previo sin crearlo otra vez', async () => {
+  Encargo.findOne.mockImplementation(() => query(existing()));
+  const res = await auth('post', '/encargos').send(payload());
+  expect(res.status).toBe(200); expect(res.body.data._id).toBe(eid); expect(Encargo.create).not.toHaveBeenCalled();
+});
+test('resuelve una creación duplicada concurrente', async () => {
+  Encargo.findOne.mockImplementationOnce(() => query(null)).mockImplementationOnce(() => query(existing()));
+  Encargo.create.mockRejectedValue({ code: 11000 });
+  expect((await auth('post', '/encargos').send(payload())).body.data._id).toBe(eid);
+});
+test('clientes solo listan y consultan sus propios encargos', async () => {
+  expect((await auth('get', '/encargos')).status).toBe(200);
+  expect(Encargo.find).toHaveBeenCalledWith({ userId: uid });
+  expect((await auth('get', `/encargos/${eid}`)).status).toBe(404);
+  expect(Encargo.findOne).toHaveBeenCalledWith({ _id: eid, userId: uid });
+});
+test('staff puede listar todos los encargos pero editor no puede crearlos', async () => {
+  user.role = 'editor';
+  expect((await auth('get', '/encargos')).status).toBe(200);
+  expect(Encargo.find).toHaveBeenCalledWith({});
+  expect((await auth('post', '/encargos').send(payload())).status).toBe(403);
+});
+test('un cliente no puede marcar llegada', async () => {
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'disponible' })).status).toBe(403);
+});
+test.each(['', '   ', 'a'.repeat(501)])('cancelar requiere motivo válido', async motivo_cancelacion => {
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'cancelado', motivo_cancelacion })).status).toBe(400);
+});
+test('guarda el motivo y el historial al cancelar', async () => {
+  Encargo.findOne.mockImplementation(() => query(existing()));
+  const res = await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'cancelado', motivo_cancelacion: '  Ya no lo necesito  ' });
+  expect(res.status).toBe(200);
+  expect(Encargo.findOneAndUpdate).toHaveBeenCalledWith({ _id: eid, estado: 'pendiente' }, expect.objectContaining({
+    $set: { estado: 'cancelado', motivo_cancelacion: 'Ya no lo necesito' },
+    $push: { historial: expect.objectContaining({ estado: 'cancelado', usuarioId: uid }) }
+  }), { new: true, runValidators: true });
+});
+test.each(['en_camino', 'entregado', 'cancelado'])('no cancela estado %s', async estado => {
+  Encargo.findOne.mockImplementation(() => query(existing(estado)));
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'cancelado', motivo_cancelacion: 'Motivo' })).status).toBe(409);
+});
+test('recogida no permite envío a domicilio ni saltar desde pendiente a entregado', async () => {
+  user.role = 'admin';
+  Encargo.findOne.mockImplementation(() => query(existing('disponible')));
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'en_camino' })).status).toBe(409);
+  Encargo.findOne.mockImplementation(() => query(existing()));
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'entregado' })).status).toBe(409);
+});
+test.each([['pendiente', 'recoger', 'disponible'], ['disponible', 'recoger', 'entregado'], ['disponible', 'domicilio', 'en_camino'], ['en_camino', 'domicilio', 'entregado']])('staff: %s / %s → %s', async (estado, tipo, next) => {
+  user.role = 'admin'; Encargo.findOne.mockImplementation(() => query(existing(estado, tipo)));
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: next })).status).toBe(200);
+});
+test('detecta una modificación simultánea sin sobrescribirla', async () => {
+  Encargo.findOne.mockImplementation(() => query(existing()));
+  Encargo.findOneAndUpdate.mockImplementation(() => query(null));
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'cancelado', motivo_cancelacion: 'Motivo' })).status).toBe(409);
+});
+test('rechaza id y estado de filtro inválidos', async () => {
+  expect((await auth('get', '/encargos/invalido')).status).toBe(400);
+  expect((await auth('get', '/encargos?estado=inventado')).status).toBe(400);
+});
+test('carrito conserva encargos agotados y limita compras al stock', async () => {
+  const res = await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 3, modo: 'encargo' }] });
+  expect(res.status).toBe(200); expect(res.body.data[0]).toMatchObject({ cantidad: 3, modo: 'encargo', stock: 0 });
+  const compra = await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 3, modo: 'compra' }] });
+  expect(compra.body.data).toEqual([]);
+});
+test('carrito antiguo conserva modo compra', async () => {
+  Producto.find.mockImplementation(() => query([{ _id: pid, nombre: 'Medicamento', precio: 100, stock: 2 }]));
+  expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 3 }] })).body.data[0]).toMatchObject({ modo: 'compra', cantidad: 2 });
+});
+test('carrito rechaza modo y cantidades inválidos sin guardar', async () => {
+  expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1, modo: 'otro' }] })).status).toBe(400);
+  expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1.2 }] })).status).toBe(400);
+  expect(user.save).not.toHaveBeenCalled();
+});

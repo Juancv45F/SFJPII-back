@@ -186,6 +186,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/pedidos',pedidoRoutes);
 app.use('/api/ubicaciones',ubicacionesRoutes);
 app.use('/api/carrito', carritoRoutes);
+app.use('/api/encargos', require('./src/routes/encargosRoutes'));
 app.use('/api/user', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
