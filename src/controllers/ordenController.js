@@ -1,3 +1,4 @@
+const { notify } = require('../services/notifications');
 const mongoose = require('mongoose');
 const Pedido = require('../models-mongo/pedido');
 const Producto = require('../models-mongo/product');
@@ -397,6 +398,7 @@ const crearPedido = async (req, res) => {
         });
 
         if (savedPedidoId) {
+            await notify(req, { userId, tipo: 'pedido', referenciaId: savedPedidoId, estado: 'pendiente', titulo: 'Pedido recibido', mensaje: 'Tu pedido fue recibido y está en estado pendiente.' });
             await sendPushToUser({
                 userId,
                 title: 'Pedido creado',
@@ -531,7 +533,7 @@ const actualizarEstadoPedido = async (req, res) => {
         const io = req.app.get('socketio');
         if (io) {
             // 1. Notificación general de actualización (para UI que necesiten refrescar listas)
-            io.emit('pedido_actualizado', {
+            io.to('sala_pedidos').to(String(pedido.userId?._id || pedido.userId)).emit('pedido_actualizado', {
                 pedidoId: String(pedido._id),
                 nuevoEstado: estado
             });
@@ -565,6 +567,7 @@ const actualizarEstadoPedido = async (req, res) => {
         }
 
         const clienteId = String(pedido.userId?._id || pedido.userId);
+        await notify(req, { userId: clienteId, tipo: 'pedido', referenciaId: pedido._id, estado, titulo: 'Actualización de pedido', mensaje: getMensajeEstadoCliente(estado) || ('Tu pedido cambió a ' + estado) });
         if (estado) {
             const mensajeCliente = getMensajeEstadoCliente(estado);
             if (mensajeCliente) {

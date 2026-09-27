@@ -1,3 +1,4 @@
+const { notify } = require('../services/notifications');
 const Encargo = require('../models-mongo/encargo');
 const User = require('../models-mongo/user');
 const Producto = require('../models-mongo/product');
@@ -36,6 +37,7 @@ async function crear(req, res) {
     const data = await Encargo.create({ userId: req.uid, solicitudId, items, tipo_entrega, ubicacion,
       total_estimado: Math.round(items.reduce((n, p) => n + p.precio_unitario * p.cantidad, 0) * 100) / 100,
       historial: [{ estado: 'pendiente', usuarioId: req.uid }] });
+    await notify(req, { userId: req.uid, tipo: 'encargo', referenciaId: data._id, estado: 'pendiente', titulo: 'Encargo recibido', mensaje: 'Recibimos tu encargo. Te avisaremos cuando llegue.' });
     return res.status(201).json({ ok: true, data });
   } catch (err) {
     if (err.code === 11000) {
@@ -85,6 +87,9 @@ async function actualizar(req, res) {
       $set: cambios, $push: { historial: { estado, fecha: new Date(), usuarioId: req.uid } }
     }, { new: true, runValidators: true }).populate('userId', 'nombre apellido email').exec();
     if (!data) return fail(res, 409, 'El encargo cambió. Actualiza la página e inténtalo de nuevo');
+    const mensajes = { disponible: actual.tipo_entrega === 'domicilio' ? 'Tu encargo ya llegó a la farmacia. Prepararemos el envío.' : 'Tu encargo ya llegó. Puedes recogerlo en farmacia.', en_camino: 'Tu encargo está en camino.', entregado: 'Tu encargo fue entregado.', cancelado: 'Tu encargo fue cancelado: ' + motivo };
+    await notify(req, { userId: data.userId?._id || data.userId, tipo: 'encargo', referenciaId: data._id, estado, titulo: 'Actualización de encargo', mensaje: mensajes[estado] });
+    req.app.get('socketio')?.to('sala_pedidos').emit('encargo_actualizado', { encargoId: String(data._id) });
     return res.json({ ok: true, data });
   } catch { return fail(res, 500, 'No se pudo actualizar el encargo'); }
 }
