@@ -65,6 +65,12 @@ async function syncCarrito(req, res) {
     const productos = await Producto.find({ _id: { $in: ids } }).exec();
     const productosMap = new Map(productos.map(p => [String(p._id), p]));
 
+    const conflicts = parsed.flatMap(it => {
+      const p = productosMap.get(it.id);
+      const reason = !p ? 'eliminado' : it.modo === 'encargo' && Number(p.stock) !== 0 ? 'disponible' : it.modo === 'compra' && (p.solo_encargo || Number(p.stock) === 0) ? 'agotado' : it.modo === 'compra' && it.cantidad > p.stock ? 'insuficiente' : null;
+      return reason ? [{ id: it.id, nombre: p?.nombre, motivo: reason, stock: p?.stock || 0, solo_encargo: !!p?.solo_encargo, puedeEncargar: !!p && Number(p.stock) === 0 }] : [];
+    });
+    if (conflicts.length) return res.status(409).json({ ok: false, message: 'El inventario cambió. Revisa los productos pendientes en tu carrito.', conflicts });
     const finalItems = [];
     for (const it of parsed) {
       const p = productosMap.get(it.id);

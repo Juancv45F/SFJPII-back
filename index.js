@@ -121,28 +121,7 @@ const io = new Server(server, {
     }
 });
 
-// Lógica de conexión de Sockets
-io.on('connection', (socket) => {
-    const logger = child({ component: 'socket', socketId: socket.id });
-    logger.info('socket_connected');
-
-    // 1. El usuario se une a una sala según su rol o su propio ID
-    socket.on('entrar_sala', (id) => {
-        if (id === 'admin' || id === 'repartidor' || id === 'editor') {
-            socket.join('sala_pedidos'); // Sala exclusiva para staff
-            logger.info('socket_join_room', { context: { room: 'sala_pedidos', rol: id } });
-        } else if (id) {
-            // El cliente se une a su propia sala para recibir notificaciones push
-            socket.join(String(id));
-            logger.info('socket_join_room', { context: { room: String(id), userId: id } });
-        }
-    });
-
-    socket.on('disconnect', () => {
-        logger.info('socket_disconnected');
-    });
-});
-
+require('./src/services/socketAuth').configureSockets(io);
 
 // --- IMPORTANTE: Hacer 'io' accesible en los controladores ---
 app.set('socketio', io);
@@ -186,6 +165,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/pedidos',pedidoRoutes);
 app.use('/api/ubicaciones',ubicacionesRoutes);
 app.use('/api/carrito', carritoRoutes);
+app.use('/api/notificaciones', require('./src/routes/notificationRoutes'));
 app.use('/api/encargos', require('./src/routes/encargosRoutes'));
 app.use('/api/user', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
