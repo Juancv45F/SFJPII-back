@@ -25,6 +25,7 @@ async function crear(req, res) {
     const existentes = await Producto.find({ _id: { $in: ids } }).exec();
     const porId = new Map(existentes.map(p => [String(p._id), p]));
     if (porId.size !== ids.length) return fail(res, 400, 'Uno o más medicamentos ya no existen');
+    if (existentes.some(p => Number(p.stock) !== 0)) return fail(res, 409, 'Solo puedes encargar medicamentos sin stock. Compra los disponibles desde el catálogo.');
     const items = productos.map(p => {
       const medicamento = porId.get(p.id.toLowerCase());
       return { productoId: medicamento._id, nombre: medicamento.nombre, imagen: medicamento.imagen,

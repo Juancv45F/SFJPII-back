@@ -137,3 +137,61 @@ test('carrito rechaza modo y cantidades inválidos sin guardar', async () => {
   expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1.2 }] })).status).toBe(400);
   expect(user.save).not.toHaveBeenCalled();
 });
+
+const productosRouter = require('../src/routes/productRoutes');
+describe('Productos exclusivos por encargo', () => {
+  beforeEach(() => {
+    app.use('/productos', productosRouter);
+    jest.spyOn(Producto, 'findById').mockImplementation(() => query({ _id: pid, nombre: 'Especial', stock: 0, solo_encargo: true }));
+    jest.spyOn(Producto, 'findOne').mockImplementation(() => query(null));
+    jest.spyOn(Producto, 'create').mockImplementation(async p => ({ _id: pid, ...p }));
+    jest.spyOn(Producto, 'findByIdAndUpdate').mockImplementation((id, p) => query({ _id: id, ...p }));
+    jest.spyOn(Producto, 'findByIdAndDelete').mockImplementation(() => query({ _id: pid }));
+  });
+  const producto = () => ({ nombre: 'Especial', precio: 3000, stock: 0, solo_encargo: true, categoria: { nombre: 'Especiales' } });
+  test('no muestra exclusivos en catálogo normal ni en búsqueda', async () => {
+    await auth('get', '/productos'); expect(Producto.find).toHaveBeenLastCalledWith({ solo_encargo: { $ne: true } });
+    await auth('get', '/productos/buscar?q=Especial');
+    expect(Producto.find).toHaveBeenLastCalledWith(expect.objectContaining({ solo_encargo: { $ne: true } }));
+    await auth('get', '/productos?encargos=true');
+    expect(Producto.find).toHaveBeenLastCalledWith({ $or: [{ solo_encargo: true }, { stock: 0 }] });
+  });
+  test('admin crea y edita exclusivo con stock cero numérico', async () => {
+    user.role = 'admin';
+    const create = await auth('post', '/productos').send(producto());
+    expect(create.status).toBe(201); expect(create.body.data.solo_encargo).toBe(true);
+    const edit = await auth('put', `/productos/${pid}`).send({ ...producto(), precio: 3100 });
+    expect(edit.status).toBe(200); expect(edit.body.data).toMatchObject({ stock: 0, solo_encargo: true, precio: 3100 });
+  });
+  test('acepta formulario multipart del administrador', async () => {
+    user.role = 'admin';
+    const res = await auth('post', '/productos').field('nombre', 'Especial').field('precio', '1000').field('stock', '0').field('solo_encargo', 'true').field('categoria', JSON.stringify({ nombre: 'Especiales' }));
+    expect(res.status).toBe(201); expect(res.body.data).toMatchObject({ solo_encargo: true, stock: 0 });
+  });
+  test('rechaza stock positivo en creación, edición y ajuste de inventario', async () => {
+    user.role = 'admin';
+    expect((await auth('post', '/productos').send({ ...producto(), stock: 2 })).status).toBe(400);
+    expect((await auth('put', `/productos/${pid}`).send({ ...producto(), stock: 2 })).status).toBe(400);
+    expect((await auth('put', `/productos/${pid}/stock`).send({ stock: 2 })).status).toBe(400);
+    expect(Producto.create).not.toHaveBeenCalled(); expect(Producto.findByIdAndUpdate).not.toHaveBeenCalled();
+  });
+  test('solo admin puede eliminar; cliente no puede crear ni editar', async () => {
+    expect((await auth('post', '/productos').send(producto())).status).toBe(403);
+    expect((await auth('put', `/productos/${pid}`).send(producto())).status).toBe(403);
+    user.role = 'editor'; expect((await auth('delete', `/productos/${pid}`)).status).toBe(403);
+    user.role = 'admin'; expect((await auth('delete', `/productos/${pid}`)).status).toBe(200);
+  });
+  test('encargo y carrito rechazan productos que recuperaron stock', async () => {
+    Producto.find.mockImplementation(() => query([{ _id: pid, nombre: 'Medicamento', precio: 100, stock: 2 }]));
+    expect((await auth('post', '/encargos').send(payload())).status).toBe(409);
+    expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1, modo: 'encargo' }] })).status).toBe(409);
+    Producto.findById.mockImplementation(() => query({ _id: pid, stock: 2 }));
+    expect((await auth('post', `/carrito/${pid}`).send({ cantidad: 1, modo: 'encargo' })).status).toBe(409);
+    expect(Encargo.create).not.toHaveBeenCalled();
+  });
+  test('un exclusivo no puede guardarse en el carrito de compra', async () => {
+    Producto.find.mockImplementation(() => query([{ _id: pid, nombre: 'Especial', precio: 1000, stock: 0, solo_encargo: true }]));
+    expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1, modo: 'compra' }] })).status).toBe(409);
+    expect((await auth('post', `/carrito/${pid}`).send({ cantidad: 1 })).status).toBe(409);
+  });
+});

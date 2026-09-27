@@ -26,6 +26,7 @@ async function getCarrito(req, res) {
           precio: p.precio,
           descuento: p.descuento || 0,
           stock: p.stock,
+          solo_encargo: !!p.solo_encargo,
           imagen: p.imagen,
           cantidad: it.cantidad,
           modo: it.modo || 'compra'
@@ -68,6 +69,8 @@ async function syncCarrito(req, res) {
     for (const it of parsed) {
       const p = productosMap.get(it.id);
       if (!p) continue;
+      if (it.modo === 'encargo' && Number(p.stock) !== 0) return res.status(409).json({ ok: false, message: 'Solo puedes encargar medicamentos sin stock. Mueve los disponibles a Comprar ahora.' });
+      if (it.modo === 'compra' && p.solo_encargo) return res.status(409).json({ ok: false, message: 'Este medicamento es exclusivo por encargo.' });
       const cantidad = it.modo === 'encargo' ? it.cantidad : Math.min(it.cantidad, Math.max(0, p.stock));
       if (cantidad <= 0) continue;
       finalItems.push({
@@ -95,6 +98,7 @@ async function syncCarrito(req, res) {
         precio: it.precio_unitario,
         descuento: p?.descuento || 0,
         stock: p?.stock ?? 0,
+        solo_encargo: !!p?.solo_encargo,
         imagen: it.imagen,
         cantidad: it.cantidad,
         modo: it.modo
@@ -153,6 +157,8 @@ async function addItem(req, res) {
     if (!producto) {
       return res.status(404).json({ ok: false, message: 'Producto no encontrado' });
     }
+    if (modo === 'encargo' && Number(producto.stock) !== 0) return res.status(409).json({ ok: false, message: 'Solo puedes encargar medicamentos sin stock.' });
+    if (modo === 'compra' && producto.solo_encargo) return res.status(409).json({ ok: false, message: 'Este medicamento es exclusivo por encargo.' });
     const maxStock = modo === 'encargo' ? 999 : Math.min(999, Math.max(0, producto.stock));
     if (maxStock === 0) {
       return res.status(400).json({ ok: false, message: 'Sin stock disponible' });
