@@ -43,3 +43,15 @@ Pruebas HTTP con autenticación real y persistencia simulada: permisos, propieta
 `Producto.solo_encargo` es opcional y vale `false` por defecto. Los medicamentos exclusivos mantienen stock cero; administración puede crearlos, editarlos y eliminarlos con las rutas de productos existentes. Se rechaza stock positivo tanto en creación/edición como en la ruta de ajuste de inventario.
 
 El catálogo y buscador predeterminados excluyen los exclusivos. `GET /api/productos?encargos=true` (o `/buscar?encargos=true`) incluye exclusivos y medicamentos normales con stock cero. Los clientes solo pueden encargar medicamentos con stock cero; la creación y el carrito vuelven a verificarlo en el servidor. Los exclusivos tampoco se pueden comprar desde la API de pedidos. La llegada de un encargo sigue siendo independiente del inventario de venta inmediata.
+
+## Notificaciones en tiempo real
+
+`GET /api/notificaciones` devuelve todas las no leídas y las últimas 100 leídas del usuario autenticado. `PATCH /api/notificaciones/:id/leida` marca únicamente avisos de ese propietario. La colección `notifications` se crea mediante Mongoose con índices por usuario/fecha; no requiere SQL.
+
+Las altas de pedidos/encargos y sus cambios de estado crean avisos persistidos. Socket.IO emite `notificacion_cliente` después de guardar el aviso. Al reconectar, el frontend recupera el historial por HTTP. Un fallo de persistencia del aviso se registra como `notification_failed`; no convierte en fallida una compra ya guardada. Esos fallos requieren revisar los registros y la disponibilidad de MongoDB.
+
+Socket.IO recibe `auth.token`, lo valida con las mismas reglas de cuenta que HTTP y asigna automáticamente la sala del propietario y, cuando corresponde, la sala del personal. Se desconecta al caducar el token. `entrar_sala` ya no permite seleccionar salas desde el cliente. Los visitantes solo reciben los eventos públicos de catálogo.
+
+La sincronización del carrito devuelve `409` con `conflicts` para agotados, stock insuficiente, productos eliminados o encargos que ya tienen existencias. No modifica el carrito remoto mientras existan conflictos. El cliente conserva su borrador y decide cómo resolverlos.
+
+Pruebas: `node node_modules/jest/bin/jest.js --runInBand tests/encargos.test.js tests/notifications.test.js` (con `NODE_ENV=test`). El servidor Socket.IO se prueba con conexiones reales y usuarios simulados; MongoDB se simula en las pruebas.

@@ -1,3 +1,4 @@
+jest.mock('../src/services/notifications', () => ({ notify: jest.fn().mockResolvedValue({}) }));
 const express = require('express');
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
@@ -126,11 +127,14 @@ test('carrito conserva encargos agotados y limita compras al stock', async () =>
   const res = await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 3, modo: 'encargo' }] });
   expect(res.status).toBe(200); expect(res.body.data[0]).toMatchObject({ cantidad: 3, modo: 'encargo', stock: 0 });
   const compra = await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 3, modo: 'compra' }] });
-  expect(compra.body.data).toEqual([]);
+  expect(compra.status).toBe(409);
+  expect(compra.body.conflicts[0]).toMatchObject({ motivo: 'agotado', puedeEncargar: true });
 });
 test('carrito antiguo conserva modo compra', async () => {
   Producto.find.mockImplementation(() => query([{ _id: pid, nombre: 'Medicamento', precio: 100, stock: 2 }]));
-  expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 3 }] })).body.data[0]).toMatchObject({ modo: 'compra', cantidad: 2 });
+  const res = await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 3 }] });
+  expect(res.status).toBe(409); expect(res.body.conflicts[0]).toMatchObject({ motivo: 'insuficiente', stock: 2 });
+  expect(user.save).not.toHaveBeenCalled();
 });
 test('carrito rechaza modo y cantidades inválidos sin guardar', async () => {
   expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1, modo: 'otro' }] })).status).toBe(400);
@@ -194,4 +198,15 @@ describe('Productos exclusivos por encargo', () => {
     expect((await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1, modo: 'compra' }] })).status).toBe(409);
     expect((await auth('post', `/carrito/${pid}`).send({ cantidad: 1 })).status).toBe(409);
   });
+});
+
+test('un producto eliminado queda como conflicto y no se pierde silenciosamente', async () => {
+  Producto.find.mockImplementation(() => query([]));
+  const res = await auth('post', '/carrito/sync').send({ items: [{ id: pid, cantidad: 1 }] });
+  expect(res.status).toBe(409); expect(res.body.conflicts[0]).toMatchObject({ id: pid, motivo: 'eliminado', puedeEncargar: false });
+  expect(user.save).not.toHaveBeenCalled();
+});
+test('persistir encargo genera notificación dirigida a su propietario', async () => {
+  await auth('post', '/encargos').send(payload());
+  expect(require('../src/services/notifications').notify).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: uid, tipo: 'encargo', referenciaId: eid, estado: 'pendiente' }));
 });
