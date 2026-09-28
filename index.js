@@ -161,6 +161,7 @@ app.use('/superadmin', session({
 app.use('/superadmin', superAdminRoutes);
 
 app.use('/api/admin', require('./src/routes/adminChatRoutes'));
+app.use('/api/cliente', require('./src/routes/clientChatRoutes'));
 app.use('/api/productos', productRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/pedidos',pedidoRoutes);
