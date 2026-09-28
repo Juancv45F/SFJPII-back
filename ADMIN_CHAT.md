@@ -1,5 +1,11 @@
 # Conexión al asistente administrativo
 
+El historial se obtiene con `GET /api/admin/conversations?offset=0` (30 resultados y `has_more`) y `GET /api/admin/conversations/:id` (mensajes). Ambas rutas requieren sesión administrativa y transmiten `X-Admin-Id` desde el usuario autenticado. `POST /api/admin/chat` acepta `conversation_id` opcional y lo devuelve para continuar el chat. El límite de 12 consultas por minuto se aplica solo al envío de preguntas, no a la navegación del historial.
+
+`DELETE /api/admin/conversations/:id` elimina definitivamente la conversación del administrador autenticado. Devuelve 204 al eliminar y 404 cuando no existe o pertenece a otro administrador.
+
+El proxy conserva códigos operativos seguros de SFJPII-AI (422, 429, 503 y 504), pero reemplaza sus detalles por mensajes controlados. Los fallos se registran mediante el logger existente con usuario, operación, código y estado remoto; no se registran mensajes, respuestas ni la clave interna.
+
 `POST /api/admin/chat` acepta `{ "mensaje": "Consulta de inventario" }`, usando la autenticación habitual de la farmacia. Solo `admin` y `super_admin` pueden utilizarlo. El servicio devuelve `{ respuesta, tools_utilizadas, grafica }`.
 
 Configura en el entorno privado del backend:

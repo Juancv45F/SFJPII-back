@@ -27,8 +27,8 @@ test.each(['cliente', 'editor'])('rechaza rol %s', async role => {
 test.each(['admin', 'super_admin'])('permite %s y conserva la clave en el servidor', async role => {
   const res = await send(role);
   expect(res.status).toBe(200);
-  expect(res.body).toEqual({ respuesta: 'Ventas del mes', grafica: null, tools_utilizadas: [] });
-  expect(axios.post).toHaveBeenCalledWith('http://ai.test/admin/chat', { mensaje: 'ventas' }, expect.objectContaining({ headers: { 'X-Service-Key': 'private-test-key' }, maxRedirects: 0 }));
+  expect(res.body).toEqual({ respuesta: 'Ventas del mes', grafica: null, tools_utilizadas: [], conversation_id: null });
+  expect(axios.post).toHaveBeenCalledWith('http://ai.test/admin/chat', { mensaje: 'ventas', conversation_id: null }, expect.objectContaining({ headers: { 'X-Service-Key': 'private-test-key', 'X-Admin-Id': String(sequence) }, maxRedirects: 0 }));
   expect(res.headers['cache-control']).toBe('no-store');
 });
 test.each(['', 'x'.repeat(2001), 123])('valida la consulta', async mensaje => {
@@ -44,4 +44,44 @@ test('maneja timeout sin revelar errores internos', async () => {
 });
 test('rechaza respuestas inválidas del servicio', async () => {
   axios.post.mockResolvedValue({ data: {} }); expect((await send()).status).toBe(502);
+});
+
+test('conserva errores operativos seguros del servicio de IA', async () => {
+  axios.post.mockRejectedValue({ response: { status: 422, data: { detail: 'interno' } } });
+  const res = await send();
+  expect(res.status).toBe(422);
+  expect(res.body.message).toBe('No pude interpretar el periodo o los límites de la consulta.');
+  expect(JSON.stringify(res.body)).not.toContain('interno');
+});
+
+test('historial usa el administrador autenticado e ignora identidades enviadas por el cliente', async () => {
+  jest.spyOn(User, 'findById').mockReturnValue({ select: () => ({ exec: async () => ({ role: 'admin' }) }) });
+  jest.spyOn(axios, 'get').mockResolvedValue({ data: { items: [], has_more: false } });
+  const token = jwt.sign({ uid: 'owner' }, process.env.JWT_SECRET);
+  const res = await request(app).get('/admin/conversations?admin_id=other').set('x-token', token);
+  expect(res.status).toBe(200);
+  expect(axios.get).toHaveBeenCalledWith('http://ai.test/admin/conversations', expect.objectContaining({ headers: { 'X-Service-Key': 'private-test-key', 'X-Admin-Id': 'owner' } }));
+});
+test('conversación de otro propietario devuelve 404', async () => {
+  jest.spyOn(User, 'findById').mockReturnValue({ select: () => ({ exec: async () => ({ role: 'admin' }) }) });
+  jest.spyOn(axios, 'get').mockRejectedValue({ response: { status: 404 } });
+  const res = await request(app).get('/admin/conversations/other').set('x-token', jwt.sign({ uid: 'owner' }, process.env.JWT_SECRET));
+  expect(res.status).toBe(404);
+});
+
+test('elimina únicamente con la identidad autenticada', async () => {
+  jest.spyOn(User, 'findById').mockReturnValue({ select: () => ({ exec: async () => ({ role: 'admin' }) }) });
+  jest.spyOn(axios, 'delete').mockResolvedValue({ status: 204 });
+  const res = await request(app).delete('/admin/conversations/chat-1').set('x-token', jwt.sign({ uid: 'owner' }, process.env.JWT_SECRET));
+  expect(res.status).toBe(204);
+  expect(axios.delete).toHaveBeenCalledWith('http://ai.test/admin/conversations/chat-1', expect.objectContaining({
+    headers: { 'X-Service-Key': 'private-test-key', 'X-Admin-Id': 'owner' }
+  }));
+});
+
+test('no oculta un 404 al eliminar una conversación ajena', async () => {
+  jest.spyOn(User, 'findById').mockReturnValue({ select: () => ({ exec: async () => ({ role: 'admin' }) }) });
+  jest.spyOn(axios, 'delete').mockRejectedValue({ response: { status: 404 } });
+  const res = await request(app).delete('/admin/conversations/foreign').set('x-token', jwt.sign({ uid: 'owner' }, process.env.JWT_SECRET));
+  expect(res.status).toBe(404);
 });
