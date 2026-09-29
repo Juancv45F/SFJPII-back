@@ -22,4 +22,31 @@ router.patch('/:id/leida', async (req, res) => {
     res.json({ ok: true, data });
   } catch { res.status(500).json({ message: 'No se pudo marcar la notificación' }); }
 });
+
+router.delete('/', async (req, res) => {
+  try {
+    const result = await Notification.deleteMany({ userId: req.uid }).exec();
+    req.app.get('socketio')?.to(String(req.uid)).emit('notificaciones_eliminadas', {
+      userId: String(req.uid)
+    });
+    res.json({ ok: true, eliminadas: result.deletedCount || 0 });
+  } catch {
+    res.status(500).json({ message: 'No se pudieron eliminar las notificaciones' });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'ID inválido' });
+  try {
+    const data = await Notification.findOneAndDelete({ _id: req.params.id, userId: req.uid }).exec();
+    if (!data) return res.status(404).json({ message: 'Notificación no encontrada' });
+    req.app.get('socketio')?.to(String(req.uid)).emit('notificacion_eliminada', {
+      _id: String(req.params.id),
+      userId: String(req.uid)
+    });
+    res.status(204).send();
+  } catch {
+    res.status(500).json({ message: 'No se pudo eliminar la notificación' });
+  }
+});
 module.exports = router;

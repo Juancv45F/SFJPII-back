@@ -66,6 +66,27 @@ test('recupera historial por propietario y marca lectura sin acceder a otros usu
   expect(Notification.findOneAndUpdate.mock.calls[0][0]).toEqual({ _id: nid, userId: other });
   expect((await request(app).get('/notifications')).status).toBe(401);
 });
+test('elimina una notificación solamente para su propietario', async () => {
+  const deleted = { _id: nid, userId: uid };
+  jest.spyOn(Notification, 'findOneAndDelete').mockImplementation(filter => query(filter.userId === uid ? deleted : null));
+
+  const forbidden = await request(app).delete(`/notifications/${nid}`).set('x-token', token(other));
+  expect(forbidden.status).toBe(404);
+  expect(Notification.findOneAndDelete).toHaveBeenLastCalledWith({ _id: nid, userId: other });
+
+  const socket = await connect(uid);
+  const emitted = new Promise(resolve => socket.once('notificacion_eliminada', resolve));
+  const response = await request(app).delete(`/notifications/${nid}`).set('x-token', token(uid));
+  expect(response.status).toBe(204);
+  expect(await emitted).toEqual({ _id: nid, userId: uid });
+});
+test('elimina todo el historial del usuario sin afectar otras cuentas', async () => {
+  jest.spyOn(Notification, 'deleteMany').mockImplementation(() => query({ deletedCount: 4 }));
+  const response = await request(app).delete('/notifications').set('x-token', token(uid));
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ ok: true, eliminadas: 4 });
+  expect(Notification.deleteMany).toHaveBeenCalledWith({ userId: uid });
+});
 test('recupera su sala al reconectar y rechaza tokens inválidos', async () => {
   const a = await connect(uid); a.disconnect();
   const reconnected = new Promise(r => a.once('connect', r)); a.connect(); await reconnected;

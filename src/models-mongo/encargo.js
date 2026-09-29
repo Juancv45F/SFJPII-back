@@ -20,6 +20,8 @@ const schema = new mongoose.Schema({
     calle: String, numero: String, codigo_postal: String, descripcion: String, alias: String
   },
   motivo_cancelacion: { type: String, maxlength: 500 },
+  cancelable_hasta: Date,
+  fecha_estimada_llegada: String,
   disponibleAt: Date,
   historial: [{
     estado: String,

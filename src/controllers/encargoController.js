@@ -2,16 +2,27 @@ const { notify } = require('../services/notifications');
 const Encargo = require('../models-mongo/encargo');
 const User = require('../models-mongo/user');
 const Producto = require('../models-mongo/product');
+const {
+  puedeCrearEncargo,
+  puedeCancelarEncargo,
+  cancelableHasta,
+  fechaEstimadaLlegada
+} = require('../utils/encargoSchedule');
 
 const staff = req => ['admin', 'editor', 'super_admin'].includes(req.rol);
 const scope = req => staff(req) ? {} : { userId: req.uid };
 const fail = (res, status, message) => res.status(status).json({ ok: false, message });
+const now = req => typeof req.app.get('clock') === 'function' ? req.app.get('clock')() : new Date();
 
 async function crear(req, res) {
   try {
     const { productos, tipo_entrega, ubicacionId, solicitudId } = req.body;
     const anterior = await Encargo.findOne({ userId: req.uid, solicitudId }).exec();
     if (anterior) return res.json({ ok: true, data: anterior });
+    const creadoEn = now(req);
+    if (!puedeCrearEncargo(creadoEn)) {
+      return fail(res, 409, 'Los encargos solo se reciben antes de las 10:00 p. m. Inténtalo mañana.');
+    }
     const usuario = await User.findById(req.uid).exec();
     if (!usuario) return fail(res, 404, 'Usuario no encontrado');
     let ubicacion;
@@ -36,6 +47,8 @@ async function crear(req, res) {
     // El encargo solicita abastecimiento separado; no consume el stock de venta inmediata.
     const data = await Encargo.create({ userId: req.uid, solicitudId, items, tipo_entrega, ubicacion,
       total_estimado: Math.round(items.reduce((n, p) => n + p.precio_unitario * p.cantidad, 0) * 100) / 100,
+      cancelable_hasta: cancelableHasta(creadoEn),
+      fecha_estimada_llegada: fechaEstimadaLlegada(creadoEn),
       historial: [{ estado: 'pendiente', usuarioId: req.uid }] });
     await notify(req, { userId: req.uid, tipo: 'encargo', referenciaId: data._id, estado: 'pendiente', titulo: 'Encargo recibido', mensaje: 'Recibimos tu encargo. Te avisaremos cuando llegue.' });
     return res.status(201).json({ ok: true, data });
@@ -73,6 +86,9 @@ async function actualizar(req, res) {
     if (estado === 'cancelado' && (!motivo || motivo.length > 500)) return fail(res, 400, 'Escribe el motivo de cancelación (1 a 500 caracteres)');
     const actual = await Encargo.findOne({ _id: req.params.id, ...scope(req) }).exec();
     if (!actual) return fail(res, 404, 'Encargo no encontrado');
+    if (!staff(req) && estado === 'cancelado' && !puedeCancelarEncargo(actual.createdAt, now(req))) {
+      return fail(res, 409, 'El plazo de cancelación terminó a las 9:00 p. m. del día en que realizaste el encargo.');
+    }
     const siguientes = {
       pendiente: ['disponible', 'cancelado'],
       disponible: [actual.tipo_entrega === 'domicilio' ? 'en_camino' : 'entregado', 'cancelado'],

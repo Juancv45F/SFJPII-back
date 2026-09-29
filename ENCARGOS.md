@@ -18,6 +18,13 @@ Todos los endpoints usan el middleware de autenticación existente. Los clientes
 - `GET /api/encargos/:id`: detalle con dirección e historial.
 - `PATCH /api/encargos/:id/estado`: `{ estado, motivo_cancelacion? }`. Los clientes solo pueden cancelar. El motivo es obligatorio, de 1 a 500 caracteres sin contar espacios externos.
 
+Los horarios se evalúan en `America/Mexico_City`. Un encargo nuevo se acepta
+únicamente antes de las 22:00. El cliente puede cancelarlo antes de las 21:00
+del mismo día en que lo creó; después el backend responde `409`. El personal
+conserva la cancelación administrativa. Cada encargo nuevo guarda
+`cancelable_hasta` y `fecha_estimada_llegada`: normalmente se estima el día
+siguiente y, si se creó en sábado, el lunes.
+
 ## Estados
 
 | Actual | Siguiente permitido |

@@ -21,11 +21,14 @@ let user;
 let app;
 const auth = (method, path) => request(app)[method](path).set('x-token', jwt.sign({ uid }, process.env.JWT_SECRET));
 const payload = () => ({ productos: [{ id: pid, cantidad: 2 }], tipo_entrega: 'recoger', solicitudId: '3e6a0a56-a2a8-4d55-9d98-a34fbc8da090' });
-const existing = (estado = 'pendiente', tipo_entrega = 'recoger') => ({ _id: eid, userId: uid, estado, tipo_entrega });
+const existing = (estado = 'pendiente', tipo_entrega = 'recoger', createdAt = '2026-09-28T18:00:00.000Z') => ({
+  _id: eid, userId: uid, estado, tipo_entrega, createdAt
+});
 
 beforeEach(() => {
   process.env.JWT_SECRET = 'encargos-test-secret';
   app = express(); app.use(express.json()); app.use('/encargos', router); app.use('/carrito', carritoRouter);
+  app.set('clock', () => new Date('2026-09-28T18:00:00.000Z'));
   user = { _id: uid, role: 'cliente', ubicaciones: { id: jest.fn(() => null) }, carrito: { items: [] }, save: jest.fn().mockResolvedValue() };
   jest.spyOn(User, 'findById').mockImplementation(() => query(user));
   jest.spyOn(Producto, 'find').mockImplementation(() => query([{ _id: pid, nombre: 'Medicamento', precio: 100, descuento: 10, stock: 0 }]));
@@ -44,6 +47,26 @@ test('crea un encargo agotado con precio del servidor y propietario autenticado'
   expect(res.status).toBe(201);
   expect(res.body.data).toMatchObject({ userId: uid, total_estimado: 180, tipo_entrega: 'recoger' });
   expect(res.body.data.items[0]).toMatchObject({ productoId: pid, cantidad: 2, precio_unitario: 90 });
+  expect(res.body.data).toMatchObject({ fecha_estimada_llegada: '2026-09-29' });
+  expect(new Date(res.body.data.cancelable_hasta).toISOString()).toBe('2026-09-29T03:00:00.000Z');
+});
+test('rechaza encargos desde las 10 p. m. pero permite reintentos idempotentes', async () => {
+  app.set('clock', () => new Date('2026-09-29T04:00:00.000Z'));
+  const blocked = await auth('post', '/encargos').send(payload());
+  expect(blocked.status).toBe(409);
+  expect(blocked.body.message).toContain('10:00 p. m.');
+  expect(Encargo.create).not.toHaveBeenCalled();
+
+  Encargo.findOne.mockImplementation(() => query(existing()));
+  const retry = await auth('post', '/encargos').send(payload());
+  expect(retry.status).toBe(200);
+  expect(retry.body.data._id).toBe(eid);
+});
+test('un encargo del sábado estima su llegada para el lunes', async () => {
+  app.set('clock', () => new Date('2026-09-27T03:30:00.000Z'));
+  const res = await auth('post', '/encargos').send(payload());
+  expect(res.status).toBe(201);
+  expect(res.body.data.fecha_estimada_llegada).toBe('2026-09-28');
 });
 test('solo usa una dirección guardada del propietario', async () => {
   expect((await auth('post', '/encargos').send({ ...payload(), tipo_entrega: 'domicilio', ubicacionId: aid })).status).toBe(400);
@@ -98,6 +121,23 @@ test('guarda el motivo y el historial al cancelar', async () => {
     $set: { estado: 'cancelado', motivo_cancelacion: 'Ya no lo necesito' },
     $push: { historial: expect.objectContaining({ estado: 'cancelado', usuarioId: uid }) }
   }), { new: true, runValidators: true });
+});
+test('el cliente no cancela desde las 9 p. m. ni en un día posterior', async () => {
+  Encargo.findOne.mockImplementation(() => query(existing()));
+  app.set('clock', () => new Date('2026-09-29T03:00:00.000Z'));
+  const atCutoff = await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'cancelado', motivo_cancelacion: 'Motivo' });
+  expect(atCutoff.status).toBe(409);
+  expect(atCutoff.body.message).toContain('9:00 p. m.');
+  expect(Encargo.findOneAndUpdate).not.toHaveBeenCalled();
+
+  app.set('clock', () => new Date('2026-09-29T15:00:00.000Z'));
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'cancelado', motivo_cancelacion: 'Motivo' })).status).toBe(409);
+});
+test('el personal conserva la cancelación administrativa después del límite', async () => {
+  user.role = 'admin';
+  Encargo.findOne.mockImplementation(() => query(existing()));
+  app.set('clock', () => new Date('2026-09-29T03:00:00.000Z'));
+  expect((await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'cancelado', motivo_cancelacion: 'Proveedor sin existencia' })).status).toBe(200);
 });
 test.each(['en_camino', 'entregado', 'cancelado'])('no cancela estado %s', async estado => {
   Encargo.findOne.mockImplementation(() => query(existing(estado)));
