@@ -6,6 +6,7 @@ const User = require('../models-mongo/user');
 const axios = require('axios');
 const fs = require('fs');
 const crypto = require('crypto');
+const { resolverPromocion, sincronizarPromociones } = require('../services/promotionInventory');
 
 
 let fcmAccessTokenCache = { token: '', expiresAt: 0 };
@@ -318,6 +319,7 @@ const crearPedido = async (req, res) => {
         let savedPedidoId = '';
         let clienteNombre = '';
         let direccionTexto = '';
+        const stockEvents = new Map();
 
         await session.withTransaction(async () => {
             for (const item of productos) {
@@ -325,13 +327,31 @@ const crearPedido = async (req, res) => {
                 if (!prod) throw new Error(`El producto con ID ${item.id} no existe.`);
                 if (prod.solo_encargo) throw new Error('Producto exclusivo por encargo: no existe para compra inmediata.');
 
-                const updateRes = await Producto.updateOne(
-                    { _id: prod._id, solo_encargo: { $ne: true }, stock: { $gte: item.cantidad } },
-                    { $inc: { stock: -item.cantidad } }
-                ).session(session).exec();
-                if (updateRes.modifiedCount === 0) {
-                    throw new Error(`Stock insuficiente para: ${prod.nombre}. Disponibles: ${prod.stock}`);
+                const { productoInventario, unidades, esPromocion } = await resolverPromocion(prod, { session });
+                const unidadesRequeridas = Number(item.cantidad) * unidades;
+                const actualizadoInventario = await Producto.findOneAndUpdate(
+                    {
+                        _id: productoInventario._id,
+                        solo_encargo: { $ne: true },
+                        stock: { $gte: unidadesRequeridas }
+                    },
+                    { $inc: { stock: -unidadesRequeridas } },
+                    { new: true, session }
+                ).exec();
+                if (!actualizadoInventario) {
+                    const disponibles = esPromocion
+                        ? Math.floor(Number(productoInventario.stock || 0) / unidades)
+                        : Number(productoInventario.stock || 0);
+                    throw new Error(`Stock insuficiente para: ${prod.nombre}. Disponibles: ${disponibles}`);
                 }
+
+                stockEvents.set(String(actualizadoInventario._id), Number(actualizadoInventario.stock));
+                const promociones = await sincronizarPromociones(
+                    actualizadoInventario._id,
+                    actualizadoInventario.stock,
+                    { session }
+                );
+                promociones.forEach(({ productoId, nuevoStock }) => stockEvents.set(productoId, nuevoStock));
 
                 const descuento = Number(prod.descuento || 0);
                 const precio_unitario = (descuento > 0) 
@@ -367,11 +387,10 @@ const crearPedido = async (req, res) => {
             direccionTexto = `${ubicacionSnap.calle} #${ubicacionSnap.numero}, ${ubicacionSnap.alias || ''}`.trim();
 
             if (io) {
-                for (const it of items) {
-                    const prod = await Producto.findById(it.productoId).session(session).exec();
+                for (const [productoId, nuevoStock] of stockEvents) {
                     io.emit('stock_actualizado', {
-                        productoId: String(it.productoId),
-                        nuevoStock: prod ? prod.stock : undefined
+                        productoId,
+                        nuevoStock
                     });
                 }
                 const notificacionData = {

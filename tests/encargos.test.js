@@ -191,6 +191,7 @@ describe('Productos exclusivos por encargo', () => {
     jest.spyOn(Producto, 'create').mockImplementation(async p => ({ _id: pid, ...p }));
     jest.spyOn(Producto, 'findByIdAndUpdate').mockImplementation((id, p) => query({ _id: id, ...p }));
     jest.spyOn(Producto, 'findByIdAndDelete').mockImplementation(() => query({ _id: pid }));
+    jest.spyOn(Producto, 'countDocuments').mockResolvedValue(0);
   });
   const producto = () => ({ nombre: 'Especial', precio: 3000, stock: 0, solo_encargo: true, categoria: { nombre: 'Especiales' } });
   test('no muestra exclusivos en catálogo normal ni en búsqueda', async () => {

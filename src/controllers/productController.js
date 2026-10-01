@@ -1,6 +1,32 @@
 const mongoose = require('mongoose');
 const Producto = require('../models-mongo/product');
 const cloudinary = require('../config/cloudinary');
+const { normalizarUnidades, sincronizarPromociones } = require('../services/promotionInventory');
+
+function promotionInput(body) {
+    const rawId = body.producto_base || body.productoBaseId;
+    const productoBaseId = rawId && String(rawId).trim() ? String(rawId).trim() : null;
+    const unidades = productoBaseId ? normalizarUnidades(body.unidades_por_venta) : 1;
+    return { productoBaseId, unidades };
+}
+
+async function validatePromotion({ productoBaseId, unidades, currentId }) {
+    if (!productoBaseId) return { base: null, error: null };
+    if (!mongoose.Types.ObjectId.isValid(productoBaseId)) {
+        return { error: 'El producto base seleccionado no es válido.' };
+    }
+    if (currentId && String(currentId) === productoBaseId) {
+        return { error: 'Un producto no puede ser la base de su propia promoción.' };
+    }
+    if (!unidades) {
+        return { error: 'Las unidades por promoción deben ser un entero mayor o igual a 2.' };
+    }
+    const base = await Producto.findById(productoBaseId).exec();
+    if (!base) return { error: 'El producto base seleccionado no existe.' };
+    if (base.solo_encargo) return { error: 'Un producto exclusivo por encargo no puede usarse como inventario base.' };
+    if (base.producto_base) return { error: 'Una promoción no puede utilizar otra promoción como producto base.' };
+    return { base, error: null };
+}
 
 function catalogoFilter(req) {
     return req.query.encargos === 'true'
@@ -103,6 +129,9 @@ const actualizarStock = async (req, res) => {
         if (producto.solo_encargo && Number(stock) !== 0) {
             return res.status(400).json({ message: 'Los productos exclusivos por encargo deben mantener stock cero.' });
         }
+        if (producto.producto_base) {
+            return res.status(400).json({ message: 'El stock de una promoción se calcula desde su producto base. Actualiza el stock del producto individual.' });
+        }
         const actualizado = await Producto.findByIdAndUpdate(
             id,
             { stock: Number(stock) },
@@ -114,6 +143,7 @@ const actualizarStock = async (req, res) => {
             productoId: String(actualizado._id),
             nuevoStock: actualizado.stock
         });
+        await sincronizarPromociones(actualizado._id, actualizado.stock, { io });
         if (req.logger) {
             req.logger.info('stock_actualizado_evento', {
                 context: { productoId: String(actualizado._id), nuevoStock: actualizado.stock }
@@ -252,14 +282,23 @@ const crearProducto = async (req, res) => {
         }
 
         const soloEncargo = req.body.solo_encargo === true || req.body.solo_encargo === 'true';
+        const promotion = promotionInput(req.body);
+        const promotionValidation = await validatePromotion(promotion);
+        if (promotionValidation.error) return res.status(400).json({ ok: false, message: promotionValidation.error });
+        if (soloEncargo && promotion.productoBaseId) return res.status(400).json({ ok: false, message: 'Un producto por encargo no puede ser una promoción ligada al inventario físico.' });
         if (soloEncargo && stockNum !== 0) return res.status(400).json({ message: 'Los productos exclusivos por encargo deben mantener stock cero.' });
+        const stockFinal = promotionValidation.base
+            ? Math.floor(promotionValidation.base.stock / promotion.unidades)
+            : stockNum;
         const nuevoProducto = await Producto.create({
             solo_encargo: soloEncargo,
             nombre,
             descripcion,
             precio: precioNum,
             descuento: descuentoNum,
-            stock: stockNum,
+            stock: stockFinal,
+            producto_base: promotion.productoBaseId,
+            unidades_por_venta: promotion.unidades,
             categoria: categoriaObj,
             imagen: imagenUrl
         });
@@ -351,14 +390,23 @@ const editarProducto = async (req, res) => {
         const categoriaObj = normalizeCategoriaInput(categoria, producto.categoria, categoriaId);
 
         const soloEncargo = req.body.solo_encargo === undefined ? !!producto.solo_encargo : req.body.solo_encargo === true || req.body.solo_encargo === 'true';
+        const promotion = promotionInput(req.body);
+        const promotionValidation = await validatePromotion({ ...promotion, currentId: id });
+        if (promotionValidation.error) return res.status(400).json({ ok: false, message: promotionValidation.error });
+        if (soloEncargo && promotion.productoBaseId) return res.status(400).json({ ok: false, message: 'Un producto por encargo no puede ser una promoción ligada al inventario físico.' });
         if (soloEncargo && stockNum !== 0) return res.status(400).json({ message: 'Los productos exclusivos por encargo deben mantener stock cero.' });
+        const stockFinal = promotionValidation.base
+            ? Math.floor(promotionValidation.base.stock / promotion.unidades)
+            : stockNum;
         const actualizado = await Producto.findByIdAndUpdate(id, {
             solo_encargo: soloEncargo,
             nombre,
             descripcion,
             precio: precioNum,
             descuento: descuentoNum,
-            stock: stockNum,
+            stock: stockFinal,
+            producto_base: promotion.productoBaseId,
+            unidades_por_venta: promotion.unidades,
             categoria: categoriaObj,
             imagen: imagenUrl
         }, { new: true }).exec();
@@ -367,6 +415,9 @@ const editarProducto = async (req, res) => {
         if (io) {
             io.emit('producto_actualizado', actualizado);
             io.emit('stock_actualizado', { productoId: String(actualizado._id), nuevoStock: actualizado.stock });
+        }
+        if (!actualizado.producto_base) {
+            await sincronizarPromociones(actualizado._id, actualizado.stock, { io });
         }
         if (req.logger) {
             req.logger.info('producto_actualizado', {
@@ -395,6 +446,10 @@ const editarProducto = async (req, res) => {
 const eliminarProducto = async (req, res) => {
     try {
         const { id } = req.params;
+        const promociones = await Producto.countDocuments({ producto_base: id });
+        if (promociones > 0) {
+            return res.status(409).json({ ok: false, message: 'No puedes eliminar este producto porque es la base de una promoción. Edita o elimina primero la promoción relacionada.' });
+        }
         await Producto.findByIdAndDelete(id).exec();
         if (req.logger) {
             req.logger.info('producto_eliminado', { context: { productoId: String(id) } });
