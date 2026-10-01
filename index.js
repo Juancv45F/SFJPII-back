@@ -18,6 +18,7 @@ const { child } = require('./src/utils/logger');
 const session = require('express-session');
 const connectMongo = require('connect-mongo');
 const superAdminRoutes = require('./src/routes/superAdminRoutes');
+const { startServiceKeepAlive } = require('./src/services/serviceKeepAlive');
 
 
 
@@ -91,6 +92,14 @@ app.use('/logs', express.static(path.join(__dirname, 'logs')));
 app.get('/', (req, res) => {
     res.send('Servidor trabajando');
 })
+
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        service: 'SFJPII-back',
+        uptimeSeconds: Math.floor(process.uptime())
+    });
+});
 
 // Conexion a la base de datos
 if (process.env.NODE_ENV !== 'test') {
@@ -198,6 +207,7 @@ if (process.env.NODE_ENV !== 'test') {
     server.listen(PORT, () => {
         const logger = child();
         logger.info('server_started', { context: { url: `http://localhost:${PORT}` } });
+        startServiceKeepAlive();
     })
 }
 
