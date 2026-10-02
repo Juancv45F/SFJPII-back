@@ -178,7 +178,10 @@ async function deleteOwnAccount(req, res) {
     const user = await User.findById(req.uid).exec();
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
 
-    if (user.passwordConfigured !== false) {
+    // Una sesión autenticada con Google puede eliminar la cuenta completa sin
+    // crear primero una contraseña ni desvincular el proveedor manualmente.
+    const hasGoogle = !!user?.authProviders?.google?.sub;
+    if (user.passwordConfigured !== false && !hasGoogle) {
       if (!isNonEmpty(currentPassword)) return res.status(400).json({ message: 'Escribe tu contraseña actual para eliminar la cuenta.' });
       const ok = await bcrypt.compare(String(currentPassword), String(user.password));
       if (!ok) return res.status(400).json({ message: 'Contraseña actual incorrecta' });
