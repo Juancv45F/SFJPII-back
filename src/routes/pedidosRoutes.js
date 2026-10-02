@@ -20,7 +20,11 @@ router.post('/', [
     // el precio del cliente no es vinculante, el servidor recalcula
     
     check('total', 'El total es obligatorio y numérico').isNumeric(),
+    check('tipo_entrega', 'El tipo de entrega no es válido')
+      .optional()
+      .isIn(['domicilio', 'recoger']),
     check('ubicacionId', 'La ubicación es obligatoria')
+      .if((_value, { req }) => String(req.body?.tipo_entrega || 'domicilio') === 'domicilio')
       .custom((v) => {
         const mongoose = require('mongoose');
         if (v === undefined || v === null) return false;
