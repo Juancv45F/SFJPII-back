@@ -22,6 +22,14 @@ const schema = new mongoose.Schema({
   apellido: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  passwordConfigured: { type: Boolean, default: true },
+  telefono: { type: String, default: '' },
+  authProviders: {
+    google: {
+      sub: { type: String },
+      connectedAt: { type: Date }
+    }
+  },
   foto_perfil: { type: String },
   verificationCode: { type: String },
   verificationCodeSentAt: { type: Date },
@@ -40,7 +48,10 @@ const schema = new mongoose.Schema({
       credentialID: { type: String, required: true },
       credentialPublicKey: { type: String, required: true },
       counter: { type: Number, default: 0 },
-      transports: [{ type: String }]
+      transports: [{ type: String }],
+      name: { type: String, default: 'Mi passkey' },
+      createdAt: { type: Date, default: Date.now },
+      lastUsedAt: { type: Date }
     }]
   },
 

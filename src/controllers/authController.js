@@ -1542,7 +1542,7 @@ const webauthnFinishRegistration = async (req, res) => {
         const uid = String(req.uid || '');
         if (!uid) return res.status(401).json({ message: 'No autorizado' });
 
-        const { credential, webauthnToken } = req.body || {};
+        const { credential, webauthnToken, name } = req.body || {};
         if (!credential || !webauthnToken) {
             return res.status(400).json({ message: 'Datos inválidos.' });
         }
@@ -1614,7 +1614,9 @@ const webauthnFinishRegistration = async (req, res) => {
                 credentialID: credentialIDb64,
                 credentialPublicKey: credentialPublicKeyB64,
                 counter: Number(counterRaw) || 0,
-                transports
+                transports,
+                name: String(sanitize(name) || 'Mi passkey').slice(0, 60),
+                createdAt: new Date()
             });
         }
 
@@ -1740,6 +1742,7 @@ const webauthnFinishLogin = async (req, res) => {
         }
 
         stored.counter = Number(verification.authenticationInfo.newCounter) || stored.counter;
+        stored.lastUsedAt = new Date();
         user.webauthn.currentChallenge = undefined;
         await user.save();
 
@@ -1779,13 +1782,85 @@ const webauthnListCredentials = async (req, res) => {
         return res.json({
             credentials: creds.map(c => ({
                 credentialID: c.credentialID,
-                transports: Array.isArray(c.transports) ? c.transports : []
+                name: c.name || 'Mi passkey',
+                transports: Array.isArray(c.transports) ? c.transports : [],
+                createdAt: c.createdAt || null,
+                lastUsedAt: c.lastUsedAt || null
             }))
         });
     } catch (error) {
         const logger = child();
         logger.error('webauthn_list_credentials_error', { context: { message: error.message, stack: error.stack } });
         return res.status(500).json({ message: 'No se pudieron listar las passkeys' });
+    }
+};
+
+const webauthnRenameCredential = async (req, res) => {
+    try {
+        const uid = String(req.uid || '');
+        let { credentialID, name } = req.body || {};
+        name = String(sanitize(name) || '').slice(0, 60);
+        if (!uid) return res.status(401).json({ message: 'No autorizado' });
+        if (!credentialID || !name) return res.status(400).json({ message: 'Escribe un nombre para la passkey.' });
+
+        const user = await User.findById(uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+        const credential = (user?.webauthn?.credentials || []).find(c => c.credentialID === String(credentialID));
+        if (!credential) return res.status(404).json({ message: 'Passkey no encontrada' });
+        credential.name = name;
+        await user.save();
+        return res.json({ message: 'Nombre de passkey actualizado' });
+    } catch (error) {
+        child().error('webauthn_rename_credential_error', { context: { message: error.message } });
+        return res.status(500).json({ message: 'No se pudo renombrar la passkey' });
+    }
+};
+
+const googleLogin = async (req, res) => {
+    try {
+        const credential = String(req.body?.credential || '');
+        const clientId = String(process.env.GOOGLE_CLIENT_ID || '');
+        if (!credential || !clientId) return res.status(400).json({ message: 'Inicio con Google no configurado.' });
+
+        const { data } = await axios.get('https://oauth2.googleapis.com/tokeninfo', { params: { id_token: credential }, timeout: 10000 });
+        if (String(data?.aud || '') !== clientId || String(data?.email_verified) !== 'true' || !isEmail(data?.email)) {
+            return res.status(401).json({ message: 'La cuenta de Google no pudo verificarse.' });
+        }
+
+        const email = String(data.email).toLowerCase();
+        let user = await User.findOne({ email }).exec();
+        if (!user) {
+            const generatedPassword = crypto.randomBytes(32).toString('hex') + 'A1!';
+            user = await User.create({
+                nombre: String(data.given_name || data.name || 'Usuario').slice(0, 80),
+                apellido: String(data.family_name || 'Google').slice(0, 80),
+                email,
+                password: await bcrypt.hash(generatedPassword, 10),
+                passwordConfigured: false,
+                isVerified: true,
+                foto_perfil: data.picture,
+                authProviders: { google: { sub: String(data.sub), connectedAt: new Date() } }
+            });
+        } else {
+            user.isVerified = true;
+            user.authProviders = user.authProviders || {};
+            user.authProviders.google = { sub: String(data.sub), connectedAt: user.authProviders?.google?.connectedAt || new Date() };
+            await user.save();
+        }
+
+        const token = createAccessToken(user);
+        const refreshToken = createRefreshToken(user);
+        await persistRefreshToken({ user, refreshToken, req });
+        setRefreshCookie(req, res, refreshToken);
+        if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
+        return res.json({
+            message: 'Bienvenido', token, refreshToken,
+            requiresLocation: (user.ubicaciones || []).length === 0,
+            user: { id: String(user._id), nombre: user.nombre, apellido: user.apellido, email: user.email, rol: user.role || 'cliente' }
+        });
+    } catch (error) {
+        child().error('google_login_error', { context: { message: error.message } });
+        return res.status(401).json({ message: 'No se pudo iniciar sesión con Google.' });
     }
 };
 
@@ -1831,10 +1906,12 @@ module.exports = {
     validateSsoToken,
     webauthnBeginRegistration,
     webauthnFinishRegistration,
+    webauthnRenameCredential,
     webauthnBeginLogin,
     webauthnFinishLogin,
     webauthnListCredentials,
     webauthnDeleteCredentials,
+    googleLogin,
     requestPasswordRecovery,
     verifyRecoveryStep,
     resetPassword

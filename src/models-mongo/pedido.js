@@ -14,6 +14,7 @@ const schema = new mongoose.Schema({
   total: { type: Number, required: true },
   estado: { type: String, enum: ['pendiente', 'pagado', 'en_camino', 'entregado', 'cancelado'], default: 'pendiente' },
   metodo_pago: { type: String, default: 'efectivo' },
+  tipo_entrega: { type: String, enum: ['domicilio', 'recoger'], default: 'domicilio' },
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   ubicacion: UbicacionSnapshotSchema,
   items: [DetallePedidoSchema]

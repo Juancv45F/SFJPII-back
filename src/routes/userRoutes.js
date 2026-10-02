@@ -2,6 +2,7 @@ const { Router } = require('express');
 const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const {
   getMe,
+  updateProfile,
   changePassword,
   updateMfa,
   getPreferences,
@@ -23,6 +24,7 @@ const {
 const router = Router();
 
 router.get('/me', [validateToken], getMe);
+router.put('/profile', [validateToken], updateProfile);
 router.put('/:id/role', [validateToken, authorizeRoles('admin', 'super_admin')], updateUserRole);
 router.put('/password', [validateToken], changePassword);
 router.put('/mfa', [validateToken], updateMfa);

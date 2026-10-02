@@ -83,6 +83,11 @@ async function getMe(req, res) {
         nombre: user.nombre,
         apellido: user.apellido,
         email: user.email,
+        telefono: user.telefono || '',
+        emailVerified: !!user.isVerified,
+        passwordConfigured: user.passwordConfigured !== false,
+        providers: { google: !!user?.authProviders?.google?.sub },
+        requiresLocation: (user.ubicaciones || []).length === 0,
         rol: user.role || 'cliente',
         mfa: {
           enabled: !!user?.mfa?.enabled,
@@ -110,7 +115,7 @@ async function changePassword(req, res) {
     newPassword = sanitize(newPassword);
     confirmPassword = sanitize(confirmPassword);
 
-    if (!isNonEmpty(currentPassword) || !isNonEmpty(newPassword) || !isNonEmpty(confirmPassword)) {
+    if (!isNonEmpty(newPassword) || !isNonEmpty(confirmPassword)) {
       return res.status(400).json({ message: 'Datos inválidos.' });
     }
     if (String(confirmPassword) !== String(newPassword)) {
@@ -123,11 +128,15 @@ async function changePassword(req, res) {
     const user = await User.findById(req.uid).exec();
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
 
-    const ok = await bcrypt.compare(String(currentPassword), String(user.password));
-    if (!ok) return res.status(400).json({ message: 'Contraseña actual incorrecta' });
+    if (user.passwordConfigured !== false) {
+      if (!isNonEmpty(currentPassword)) return res.status(400).json({ message: 'Escribe tu contraseña actual.' });
+      const ok = await bcrypt.compare(String(currentPassword), String(user.password));
+      if (!ok) return res.status(400).json({ message: 'Contraseña actual incorrecta' });
+    }
 
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(String(newPassword), salt);
+    user.passwordConfigured = true;
 
     const now = new Date();
     if (Array.isArray(user.refreshTokens)) {
@@ -148,6 +157,26 @@ async function changePassword(req, res) {
     const logger = child();
     logger.error('user_change_password_error', { context: { message: error.message, stack: error.stack } });
     return res.status(500).json({ message: 'Error al cambiar contraseña' });
+  }
+}
+
+async function updateProfile(req, res) {
+  try {
+    const nombre = String(sanitize(req.body?.nombre) || '').slice(0, 80);
+    const apellido = String(sanitize(req.body?.apellido) || '').slice(0, 80);
+    const telefono = String(sanitize(req.body?.telefono) || '').slice(0, 25);
+    if (!nombre || !apellido || !/^[A-Za-zÀ-ÖØ-öø-ÿ\s'.-]+$/.test(nombre) || !/^[A-Za-zÀ-ÖØ-öø-ÿ\s'.-]+$/.test(apellido)) {
+      return res.status(400).json({ message: 'Nombre o apellido inválido.' });
+    }
+    if (telefono && !/^\+?[0-9\s()-]{7,25}$/.test(telefono)) {
+      return res.status(400).json({ message: 'Número de teléfono inválido.' });
+    }
+    const user = await User.findByIdAndUpdate(req.uid, { nombre, apellido, telefono }, { new: true, runValidators: true }).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    return res.json({ message: 'Información actualizada', user: { id: String(user._id), nombre, apellido, email: user.email, telefono, rol: user.role || 'cliente' } });
+  } catch (error) {
+    child().error('user_update_profile_error', { context: { message: error.message } });
+    return res.status(500).json({ message: 'Error al actualizar la información' });
   }
 }
 
@@ -656,6 +685,7 @@ async function removePushToken(req, res) {
 
 module.exports = {
   getMe,
+  updateProfile,
   changePassword,
   updateMfa,
   beginTotpSetup,

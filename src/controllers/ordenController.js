@@ -244,8 +244,12 @@ function getMensajeEstadoCliente(estado) {
 const crearPedido = async (req, res) => {
     const session = await mongoose.startSession();
     try {
-        const { productos, ubicacionId, metodo_pago } = req.body;
+        const { productos, ubicacionId, metodo_pago, tipo_entrega = 'domicilio' } = req.body;
         const userId = req.uid;
+
+        if (!['domicilio', 'recoger'].includes(tipo_entrega)) {
+            return res.status(400).json({ message: 'Tipo de entrega no válido' });
+        }
 
         if (!productos || productos.length === 0) {
             return res.status(400).json({ message: 'El carrito está vacío' });
@@ -268,7 +272,7 @@ const crearPedido = async (req, res) => {
         }
 
         let ubicacionSnap;
-        if (ubicacionId !== undefined && usuario.ubicaciones && usuario.ubicaciones.length > 0) {
+        if (tipo_entrega === 'domicilio' && ubicacionId !== undefined && usuario.ubicaciones && usuario.ubicaciones.length > 0) {
             // A) Buscar por ObjectId si el cliente envió un ID de subdocumento
             if (mongoose.isValidObjectId(String(ubicacionId))) {
                 const sub = usuario.ubicaciones.id(String(ubicacionId)) || usuario.ubicaciones.find(u => String(u?._id) === String(ubicacionId));
@@ -297,7 +301,7 @@ const crearPedido = async (req, res) => {
                 }
             }
         }
-        if (!ubicacionSnap && req.body.ubicacion) {
+        if (tipo_entrega === 'domicilio' && !ubicacionSnap && req.body.ubicacion) {
             const u = req.body.ubicacion;
             if (u && u.calle && u.numero && u.codigo_postal) {
                 ubicacionSnap = {
@@ -309,7 +313,7 @@ const crearPedido = async (req, res) => {
                 };
             }
         }
-        if (!ubicacionSnap) {
+        if (tipo_entrega === 'domicilio' && !ubicacionSnap) {
             return res.status(400).json({ message: 'Ubicación no válida' });
         }
 
@@ -376,15 +380,18 @@ const crearPedido = async (req, res) => {
                 total,
                 estado: 'pendiente',
                 metodo_pago: metodo_pago || 'efectivo',
+                tipo_entrega,
                 userId,
-                ubicacion: ubicacionSnap,
+                ...(ubicacionSnap ? { ubicacion: ubicacionSnap } : {}),
                 items
             }], { session });
 
             const saved = nuevoPedido[0];
             savedPedidoId = String(saved._id);
             clienteNombre = `${usuario.nombre} ${usuario.apellido}`.trim();
-            direccionTexto = `${ubicacionSnap.calle} #${ubicacionSnap.numero}, ${ubicacionSnap.alias || ''}`.trim();
+            direccionTexto = tipo_entrega === 'recoger'
+                ? 'Recoger en farmacia'
+                : `${ubicacionSnap.calle} #${ubicacionSnap.numero}, ${ubicacionSnap.alias || ''}`.trim();
 
             if (io) {
                 for (const [productoId, nuevoStock] of stockEvents) {
@@ -461,7 +468,7 @@ const obtenerPedidos = async (req, res) => {
         const filter = role === 'cliente' ? { userId: req.uid } : {};
 
         const pedidos = await Pedido.find(filter)
-            .populate('userId', 'nombre apellido email')
+            .populate('userId', 'nombre apellido email telefono')
             .sort({ createdAt: -1 })
             .exec();
         res.json({ ok: true, data: pedidos });
@@ -480,7 +487,7 @@ const obtenerPedidoPorId = async (req, res) => {
     try {
         const role = String(req.rol || '').toLowerCase();
         const pedido = await Pedido.findById(id)
-            .populate('userId', 'nombre apellido email')
+            .populate('userId', 'nombre apellido email telefono')
             .exec();
 
         if (!pedido) {
@@ -546,7 +553,7 @@ const actualizarEstadoPedido = async (req, res) => {
         }
 
         const pedido = await Pedido.findByIdAndUpdate(id, { estado }, { new: true })
-            .populate('userId', 'nombre apellido email')
+            .populate('userId', 'nombre apellido email telefono')
             .exec();
 
         const io = req.app.get('socketio');
