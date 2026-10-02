@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, verifyCode, resendVerifyCode, login, googleLogin, resendMfaOtp, verifyMfa, refresh, logoutApi, generateSsoToken, validateSsoToken, webauthnBeginRegistration, webauthnFinishRegistration, webauthnBeginLogin, webauthnFinishLogin, webauthnListCredentials, webauthnRenameCredential, webauthnDeleteCredentials, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
+const { register, verifyCode, resendVerifyCode, login, googleLogin, linkGoogle, unlinkGoogle, resendMfaOtp, verifyMfa, refresh, logoutApi, generateSsoToken, validateSsoToken, webauthnBeginRegistration, webauthnFinishRegistration, webauthnBeginLogin, webauthnFinishLogin, webauthnListCredentials, webauthnRenameCredential, webauthnDeleteCredentials, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
 const { validateToken } = require('../middlewares/validateToken');
 const { authLimiter } = require('../middlewares/security');
 
@@ -15,6 +15,10 @@ router.post('/verify/resend', resendVerifyCode);
 // Iniciar Sesión
 router.post('/login', [authLimiter], login);
 router.post('/google', [authLimiter], googleLogin);
+
+// Vincular/desvincular Google estando autenticado (no requiere que emails coincidan)
+router.post('/google/link', [validateToken], linkGoogle);
+router.post('/google/unlink', [validateToken], unlinkGoogle);
 
 // --- Passkeys (WebAuthn) ---
 router.post('/webauthn/register/options', [validateToken], webauthnBeginRegistration);

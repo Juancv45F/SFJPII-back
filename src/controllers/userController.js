@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models-mongo/user');
+const { Notification } = require('../services/notifications');
 const { child } = require('../utils/logger');
 const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
@@ -86,7 +87,16 @@ async function getMe(req, res) {
         telefono: user.telefono || '',
         emailVerified: !!user.isVerified,
         passwordConfigured: user.passwordConfigured !== false,
-        providers: { google: !!user?.authProviders?.google?.sub },
+        providers: {
+          google: !!user?.authProviders?.google?.sub,
+          googleInfo: user?.authProviders?.google?.sub ? {
+            email: user.authProviders.google.email,
+            nombre: user.authProviders.google.nombre,
+            apellido: user.authProviders.google.apellido,
+            foto_perfil: user.authProviders.google.foto_perfil,
+            connectedAt: user.authProviders.google.connectedAt
+          } : null
+        },
         requiresLocation: (user.ubicaciones || []).length === 0,
         rol: user.role || 'cliente',
         mfa: {
@@ -157,6 +167,29 @@ async function changePassword(req, res) {
     const logger = child();
     logger.error('user_change_password_error', { context: { message: error.message, stack: error.stack } });
     return res.status(500).json({ message: 'Error al cambiar contraseña' });
+  }
+}
+
+async function deleteOwnAccount(req, res) {
+  try {
+    let { currentPassword } = req.body || {};
+    currentPassword = sanitize(currentPassword);
+
+    const user = await User.findById(req.uid).exec();
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+    if (user.passwordConfigured !== false) {
+      if (!isNonEmpty(currentPassword)) return res.status(400).json({ message: 'Escribe tu contraseña actual para eliminar la cuenta.' });
+      const ok = await bcrypt.compare(String(currentPassword), String(user.password));
+      if (!ok) return res.status(400).json({ message: 'Contraseña actual incorrecta' });
+    }
+
+    await Notification.deleteMany({ userId: user._id }).exec();
+    await User.deleteOne({ _id: user._id }).exec();
+    return res.json({ message: 'Cuenta eliminada correctamente.' });
+  } catch (error) {
+    child().error('user_delete_account_error', { context: { message: error.message, stack: error.stack } });
+    return res.status(500).json({ message: 'Error al eliminar la cuenta' });
   }
 }
 
@@ -685,6 +718,7 @@ async function removePushToken(req, res) {
 
 module.exports = {
   getMe,
+  deleteOwnAccount,
   updateProfile,
   changePassword,
   updateMfa,

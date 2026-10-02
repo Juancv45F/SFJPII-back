@@ -2,6 +2,7 @@ const { Router } = require('express');
 const { validateToken, authorizeRoles } = require('../middlewares/validateToken');
 const {
   getMe,
+  deleteOwnAccount,
   updateProfile,
   changePassword,
   updateMfa,
@@ -24,6 +25,7 @@ const {
 const router = Router();
 
 router.get('/me', [validateToken], getMe);
+router.delete('/account', [validateToken], deleteOwnAccount);
 router.put('/profile', [validateToken], updateProfile);
 router.put('/:id/role', [validateToken, authorizeRoles('admin', 'super_admin')], updateUserRole);
 router.put('/password', [validateToken], changePassword);

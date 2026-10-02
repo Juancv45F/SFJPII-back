@@ -27,6 +27,10 @@ const schema = new mongoose.Schema({
   authProviders: {
     google: {
       sub: { type: String },
+      email: { type: String },
+      nombre: { type: String },
+      apellido: { type: String },
+      foto_perfil: { type: String },
       connectedAt: { type: Date }
     }
   },

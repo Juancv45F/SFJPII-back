@@ -1816,35 +1816,72 @@ const webauthnRenameCredential = async (req, res) => {
     }
 };
 
+async function verifyGoogleIdToken(credential) {
+    const clientId = String(process.env.GOOGLE_CLIENT_ID || '');
+    if (!credential || !clientId) throw new Error('Inicio con Google no configurado.');
+    const { data } = await axios.get('https://oauth2.googleapis.com/tokeninfo', { params: { id_token: credential }, timeout: 10000 });
+    if (String(data?.aud || '') !== clientId || String(data?.email_verified) !== 'true' || !isEmail(data?.email)) {
+        throw new Error('La cuenta de Google no pudo verificarse.');
+    }
+    return {
+        sub: String(data.sub),
+        email: String(data.email).toLowerCase(),
+        nombre: String(data.given_name || data.name || 'Usuario').slice(0, 80),
+        apellido: String(data.family_name || 'Google').slice(0, 80),
+        picture: data.picture || undefined
+    };
+}
+
+function buildGoogleProvider(profile, existingEntry) {
+    return {
+        sub: profile.sub,
+        email: profile.email,
+        nombre: profile.nombre,
+        apellido: profile.apellido,
+        foto_perfil: profile.picture,
+        connectedAt: existingEntry?.connectedAt || new Date()
+    };
+}
+
+function isPlaceholderName(nombre, apellido) {
+    const n = String(nombre || '').trim();
+    const a = String(apellido || '').trim().toLowerCase();
+    return !n || n === 'Usuario' || a === 'google';
+}
+
 const googleLogin = async (req, res) => {
     try {
         const credential = String(req.body?.credential || '');
-        const clientId = String(process.env.GOOGLE_CLIENT_ID || '');
-        if (!credential || !clientId) return res.status(400).json({ message: 'Inicio con Google no configurado.' });
+        const profile = await verifyGoogleIdToken(credential);
 
-        const { data } = await axios.get('https://oauth2.googleapis.com/tokeninfo', { params: { id_token: credential }, timeout: 10000 });
-        if (String(data?.aud || '') !== clientId || String(data?.email_verified) !== 'true' || !isEmail(data?.email)) {
-            return res.status(401).json({ message: 'La cuenta de Google no pudo verificarse.' });
-        }
+        // 1) Prioriza búsqueda por sub (vinculación), luego por email principal
+        let user = await User.findOne({ 'authProviders.google.sub': profile.sub }).exec();
+        if (!user) user = await User.findOne({ email: profile.email }).exec();
 
-        const email = String(data.email).toLowerCase();
-        let user = await User.findOne({ email }).exec();
         if (!user) {
+            // Nuevo usuario: guardamos nombre/apellido reales de Google
             const generatedPassword = crypto.randomBytes(32).toString('hex') + 'A1!';
             user = await User.create({
-                nombre: String(data.given_name || data.name || 'Usuario').slice(0, 80),
-                apellido: String(data.family_name || 'Google').slice(0, 80),
-                email,
+                nombre: profile.nombre,
+                apellido: profile.apellido,
+                email: profile.email,
                 password: await bcrypt.hash(generatedPassword, 10),
                 passwordConfigured: false,
                 isVerified: true,
-                foto_perfil: data.picture,
-                authProviders: { google: { sub: String(data.sub), connectedAt: new Date() } }
+                foto_perfil: profile.picture,
+                authProviders: { google: buildGoogleProvider(profile) }
             });
         } else {
+            const existingGoogle = user?.authProviders?.google;
+            const shouldUpdateProfile = isPlaceholderName(user.nombre, user.apellido);
             user.isVerified = true;
+            if (shouldUpdateProfile && !existingGoogle?.sub) {
+                user.nombre = profile.nombre;
+                user.apellido = profile.apellido;
+                if (profile.picture && !user.foto_perfil) user.foto_perfil = profile.picture;
+            }
             user.authProviders = user.authProviders || {};
-            user.authProviders.google = { sub: String(data.sub), connectedAt: user.authProviders?.google?.connectedAt || new Date() };
+            user.authProviders.google = buildGoogleProvider(profile, existingGoogle);
             await user.save();
         }
 
@@ -1860,7 +1897,76 @@ const googleLogin = async (req, res) => {
         });
     } catch (error) {
         child().error('google_login_error', { context: { message: error.message } });
-        return res.status(401).json({ message: 'No se pudo iniciar sesión con Google.' });
+        return res.status(401).json({ message: error.message || 'No se pudo iniciar sesión con Google.' });
+    }
+};
+
+const linkGoogle = async (req, res) => {
+    try {
+        const uid = String(req.uid || '');
+        if (!uid) return res.status(401).json({ message: 'No autorizado' });
+
+        let { credential, currentPassword } = req.body || {};
+        credential = sanitize(credential);
+        currentPassword = sanitize(currentPassword);
+
+        const user = await User.findById(uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+        // Si tiene contraseña configurada, la pedimos como confirmación
+        if (user.passwordConfigured !== false) {
+            if (!isNonEmpty(currentPassword)) return res.status(400).json({ message: 'Confirma tu contraseña para vincular Google.' });
+            const ok = await bcrypt.compare(String(currentPassword), String(user.password));
+            if (!ok) return res.status(400).json({ message: 'Contraseña incorrecta' });
+        }
+
+        if (user?.authProviders?.google?.sub) {
+            return res.status(400).json({ message: 'Esta cuenta ya tiene Google vinculado.' });
+        }
+
+        const profile = await verifyGoogleIdToken(credential);
+        const conflictSub = await User.findOne({ 'authProviders.google.sub': profile.sub, _id: { $ne: user._id } }).exec();
+        if (conflictSub) return res.status(409).json({ message: 'Esa cuenta de Google ya está vinculada a otro usuario.' });
+
+        user.authProviders = user.authProviders || {};
+        user.authProviders.google = buildGoogleProvider(profile);
+        await user.save();
+        return res.json({ message: 'Google vinculado correctamente.', google: user.authProviders.google });
+    } catch (error) {
+        child().error('google_link_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(400).json({ message: error.message || 'No se pudo vincular Google.' });
+    }
+};
+
+const unlinkGoogle = async (req, res) => {
+    try {
+        const uid = String(req.uid || '');
+        if (!uid) return res.status(401).json({ message: 'No autorizado' });
+
+        let { currentPassword } = req.body || {};
+        currentPassword = sanitize(currentPassword);
+
+        const user = await User.findById(uid).exec();
+        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+        if (!user?.authProviders?.google?.sub) {
+            return res.status(400).json({ message: 'Google no está vinculado.' });
+        }
+
+        if (user.passwordConfigured !== false) {
+            if (!isNonEmpty(currentPassword)) return res.status(400).json({ message: 'Confirma tu contraseña para desvincular Google.' });
+            const ok = await bcrypt.compare(String(currentPassword), String(user.password));
+            if (!ok) return res.status(400).json({ message: 'Contraseña incorrecta' });
+        } else if (!user.webauthn?.credentials?.length) {
+            // Usuario solo-Google sin password ni passkeys: no se deja sin forma de ingresar
+            return res.status(400).json({ message: 'Configura una contraseña o una passkey antes de desvincular Google.' });
+        }
+
+        user.authProviders.google = undefined;
+        await user.save();
+        return res.json({ message: 'Google desvinculado correctamente.' });
+    } catch (error) {
+        child().error('google_unlink_error', { context: { message: error.message, stack: error.stack } });
+        return res.status(500).json({ message: 'No se pudo desvincular Google.' });
     }
 };
 
@@ -1893,6 +1999,8 @@ const webauthnDeleteCredentials = async (req, res) => {
     }
 };
 
+
+
 module.exports = {
     register,
     verifyCode,
@@ -1912,6 +2020,8 @@ module.exports = {
     webauthnListCredentials,
     webauthnDeleteCredentials,
     googleLogin,
+    linkGoogle,
+    unlinkGoogle,
     requestPasswordRecovery,
     verifyRecoveryStep,
     resetPassword
