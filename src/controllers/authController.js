@@ -876,6 +876,9 @@ const login = async (req, res) => {
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
+                apellido: user.apellido,
+                email: user.email,
+                foto_perfil: user.foto_perfil,
                 rol: user.role || 'cliente'
             }
         });
@@ -1061,6 +1064,9 @@ const verifyMfa = async (req, res) => {
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
+                apellido: user.apellido,
+                email: user.email,
+                foto_perfil: user.foto_perfil,
                 rol: user.role || 'cliente'
             }
         });
@@ -1142,6 +1148,9 @@ const refresh = async (req, res) => {
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
+                apellido: user.apellido,
+                email: user.email,
+                foto_perfil: user.foto_perfil,
                 rol: user.role || 'cliente'
             }
         });
@@ -1417,6 +1426,9 @@ const validateSsoToken = async (req, res) => {
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
+                apellido: user.apellido,
+                email: user.email,
+                foto_perfil: user.foto_perfil,
                 rol: user.role || 'cliente'
             }
         });
@@ -1760,6 +1772,9 @@ const webauthnFinishLogin = async (req, res) => {
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
+                apellido: user.apellido,
+                email: user.email,
+                foto_perfil: user.foto_perfil,
                 rol: user.role || 'cliente'
             }
         });
@@ -1843,6 +1858,128 @@ function buildGoogleProvider(profile, existingEntry) {
     };
 }
 
+function buildSocialProvider(profile, existingEntry) {
+    return {
+        sub: profile.sub,
+        email: profile.email,
+        nombre: profile.nombre,
+        apellido: profile.apellido,
+        foto_perfil: profile.picture,
+        connectedAt: existingEntry?.connectedAt || new Date()
+    };
+}
+
+async function finishSocialLogin(req, res, provider, profile) {
+    let user = await User.findOne({ [`authProviders.${provider}.sub`]: profile.sub }).exec();
+    if (!user) user = await User.findOne({ email: profile.email }).exec();
+
+    if (!user) {
+        const generatedPassword = crypto.randomBytes(32).toString('hex') + 'A1!';
+        user = await User.create({
+            nombre: profile.nombre,
+            apellido: profile.apellido,
+            email: profile.email,
+            password: await bcrypt.hash(generatedPassword, 10),
+            passwordConfigured: false,
+            isVerified: true,
+            foto_perfil: profile.picture,
+            authProviders: { [provider]: buildSocialProvider(profile) }
+        });
+    } else {
+        const existingProvider = user?.authProviders?.[provider];
+        user.isVerified = true;
+        if (isPlaceholderName(user.nombre, user.apellido) && !existingProvider?.sub) {
+            user.nombre = profile.nombre;
+            user.apellido = profile.apellido;
+        }
+        if (profile.picture && !user.foto_perfil) user.foto_perfil = profile.picture;
+        user.authProviders = user.authProviders || {};
+        user.authProviders[provider] = buildSocialProvider(profile, existingProvider);
+        await user.save();
+    }
+
+    const token = createAccessToken(user);
+    const refreshToken = createRefreshToken(user);
+    await persistRefreshToken({ user, refreshToken, req });
+    setRefreshCookie(req, res, refreshToken);
+    if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
+    return res.json({
+        message: 'Bienvenido', token, refreshToken,
+        requiresLocation: (user.ubicaciones || []).length === 0,
+        user: {
+            id: String(user._id), nombre: user.nombre, apellido: user.apellido,
+            email: user.email, foto_perfil: user.foto_perfil, rol: user.role || 'cliente'
+        }
+    });
+}
+
+let microsoftJwksCache = { expiresAt: 0, keys: [] };
+async function verifyMicrosoftIdToken(idToken) {
+    const clientId = String(process.env.MICROSOFT_CLIENT_ID || '');
+    if (!idToken || !clientId) throw new Error('Inicio con Microsoft no configurado.');
+    const decoded = jwt.decode(idToken, { complete: true });
+    if (!decoded?.header?.kid || !decoded?.payload?.tid) throw new Error('La cuenta de Microsoft no pudo verificarse.');
+    if (Date.now() >= microsoftJwksCache.expiresAt) {
+        const { data } = await axios.get('https://login.microsoftonline.com/common/discovery/v2.0/keys', { timeout: 10000 });
+        microsoftJwksCache = { keys: Array.isArray(data?.keys) ? data.keys : [], expiresAt: Date.now() + 60 * 60 * 1000 };
+    }
+    const jwk = microsoftJwksCache.keys.find(k => k.kid === decoded.header.kid);
+    if (!jwk) throw new Error('La firma de Microsoft no pudo verificarse.');
+    const key = crypto.createPublicKey({ key: jwk, format: 'jwk' });
+    const issuer = `https://login.microsoftonline.com/${decoded.payload.tid}/v2.0`;
+    const claims = jwt.verify(idToken, key, { algorithms: ['RS256'], audience: clientId, issuer });
+    const email = String(claims.preferred_username || claims.email || '').toLowerCase();
+    if (!isEmail(email)) throw new Error('Microsoft no proporcionó un correo válido.');
+    return {
+        sub: String(claims.oid || claims.sub), email,
+        nombre: String(claims.given_name || claims.name || 'Usuario').slice(0, 80),
+        apellido: String(claims.family_name || 'Microsoft').slice(0, 80),
+        picture: undefined
+    };
+}
+
+const microsoftLogin = async (req, res) => {
+    try {
+        const profile = await verifyMicrosoftIdToken(String(req.body?.idToken || ''));
+        return await finishSocialLogin(req, res, 'microsoft', profile);
+    } catch (error) {
+        child().error('microsoft_login_error', { context: { message: error.message } });
+        return res.status(401).json({ message: error.message || 'No se pudo iniciar sesión con Microsoft.' });
+    }
+};
+
+async function verifyFacebookAccessToken(accessToken) {
+    const appId = String(process.env.FACEBOOK_APP_ID || '');
+    const appSecret = String(process.env.FACEBOOK_APP_SECRET || '');
+    if (!accessToken || !appId || !appSecret) throw new Error('Inicio con Facebook no configurado.');
+    const debug = await axios.get('https://graph.facebook.com/debug_token', {
+        params: { input_token: accessToken, access_token: `${appId}|${appSecret}` }, timeout: 10000
+    });
+    const tokenData = debug?.data?.data;
+    if (!tokenData?.is_valid || String(tokenData.app_id) !== appId) throw new Error('La cuenta de Facebook no pudo verificarse.');
+    const { data } = await axios.get('https://graph.facebook.com/me', {
+        params: { fields: 'id,email,first_name,last_name,name,picture.type(large)', access_token: accessToken }, timeout: 10000
+    });
+    const email = String(data?.email || '').toLowerCase();
+    if (!data?.id || !isEmail(email)) throw new Error('Facebook debe compartir un correo válido para continuar.');
+    return {
+        sub: String(data.id), email,
+        nombre: String(data.first_name || data.name || 'Usuario').slice(0, 80),
+        apellido: String(data.last_name || 'Facebook').slice(0, 80),
+        picture: data?.picture?.data?.url || undefined
+    };
+}
+
+const facebookLogin = async (req, res) => {
+    try {
+        const profile = await verifyFacebookAccessToken(String(req.body?.accessToken || ''));
+        return await finishSocialLogin(req, res, 'facebook', profile);
+    } catch (error) {
+        child().error('facebook_login_error', { context: { message: error.message } });
+        return res.status(401).json({ message: error.message || 'No se pudo iniciar sesión con Facebook.' });
+    }
+};
+
 function isPlaceholderName(nombre, apellido) {
     const n = String(nombre || '').trim();
     const a = String(apellido || '').trim().toLowerCase();
@@ -1893,7 +2030,7 @@ const googleLogin = async (req, res) => {
         return res.json({
             message: 'Bienvenido', token, refreshToken,
             requiresLocation: (user.ubicaciones || []).length === 0,
-            user: { id: String(user._id), nombre: user.nombre, apellido: user.apellido, email: user.email, rol: user.role || 'cliente' }
+            user: { id: String(user._id), nombre: user.nombre, apellido: user.apellido, email: user.email, foto_perfil: user.foto_perfil, rol: user.role || 'cliente' }
         });
     } catch (error) {
         child().error('google_login_error', { context: { message: error.message } });
@@ -2020,6 +2157,8 @@ module.exports = {
     webauthnListCredentials,
     webauthnDeleteCredentials,
     googleLogin,
+    microsoftLogin,
+    facebookLogin,
     linkGoogle,
     unlinkGoogle,
     requestPasswordRecovery,

@@ -85,6 +85,7 @@ async function getMe(req, res) {
         apellido: user.apellido,
         email: user.email,
         telefono: user.telefono || '',
+        foto_perfil: user.foto_perfil || '',
         emailVerified: !!user.isVerified,
         passwordConfigured: user.passwordConfigured !== false,
         providers: {
@@ -95,6 +96,22 @@ async function getMe(req, res) {
             apellido: user.authProviders.google.apellido,
             foto_perfil: user.authProviders.google.foto_perfil,
             connectedAt: user.authProviders.google.connectedAt
+          } : null,
+          microsoft: !!user?.authProviders?.microsoft?.sub,
+          microsoftInfo: user?.authProviders?.microsoft?.sub ? {
+            email: user.authProviders.microsoft.email,
+            nombre: user.authProviders.microsoft.nombre,
+            apellido: user.authProviders.microsoft.apellido,
+            foto_perfil: user.authProviders.microsoft.foto_perfil,
+            connectedAt: user.authProviders.microsoft.connectedAt
+          } : null,
+          facebook: !!user?.authProviders?.facebook?.sub,
+          facebookInfo: user?.authProviders?.facebook?.sub ? {
+            email: user.authProviders.facebook.email,
+            nombre: user.authProviders.facebook.nombre,
+            apellido: user.authProviders.facebook.apellido,
+            foto_perfil: user.authProviders.facebook.foto_perfil,
+            connectedAt: user.authProviders.facebook.connectedAt
           } : null
         },
         requiresLocation: (user.ubicaciones || []).length === 0,
@@ -201,15 +218,19 @@ async function updateProfile(req, res) {
     const nombre = String(sanitize(req.body?.nombre) || '').slice(0, 80);
     const apellido = String(sanitize(req.body?.apellido) || '').slice(0, 80);
     const telefono = String(sanitize(req.body?.telefono) || '').slice(0, 25);
+    const foto_perfil = String(sanitize(req.body?.foto_perfil) || '').slice(0, 2048);
     if (!nombre || !apellido || !/^[A-Za-zÀ-ÖØ-öø-ÿ\s'.-]+$/.test(nombre) || !/^[A-Za-zÀ-ÖØ-öø-ÿ\s'.-]+$/.test(apellido)) {
       return res.status(400).json({ message: 'Nombre o apellido inválido.' });
     }
     if (telefono && !/^\+?[0-9\s()-]{7,25}$/.test(telefono)) {
       return res.status(400).json({ message: 'Número de teléfono inválido.' });
     }
-    const user = await User.findByIdAndUpdate(req.uid, { nombre, apellido, telefono }, { new: true, runValidators: true }).exec();
+    if (foto_perfil && !/^https:\/\//i.test(foto_perfil)) {
+      return res.status(400).json({ message: 'La foto de perfil debe usar una dirección HTTPS válida.' });
+    }
+    const user = await User.findByIdAndUpdate(req.uid, { nombre, apellido, telefono, foto_perfil }, { new: true, runValidators: true }).exec();
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
-    return res.json({ message: 'Información actualizada', user: { id: String(user._id), nombre, apellido, email: user.email, telefono, rol: user.role || 'cliente' } });
+    return res.json({ message: 'Información actualizada', user: { id: String(user._id), nombre, apellido, email: user.email, telefono, foto_perfil, rol: user.role || 'cliente' } });
   } catch (error) {
     child().error('user_update_profile_error', { context: { message: error.message } });
     return res.status(500).json({ message: 'Error al actualizar la información' });
