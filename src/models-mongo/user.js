@@ -40,14 +40,6 @@ const schema = new mongoose.Schema({
       apellido: { type: String },
       foto_perfil: { type: String },
       connectedAt: { type: Date }
-    },
-    facebook: {
-      sub: { type: String },
-      email: { type: String },
-      nombre: { type: String },
-      apellido: { type: String },
-      foto_perfil: { type: String },
-      connectedAt: { type: Date }
     }
   },
   foto_perfil: { type: String },

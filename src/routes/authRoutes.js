@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, verifyCode, resendVerifyCode, login, googleLogin, microsoftLogin, facebookLogin, linkGoogle, unlinkGoogle, resendMfaOtp, verifyMfa, refresh, logoutApi, generateSsoToken, validateSsoToken, webauthnBeginRegistration, webauthnFinishRegistration, webauthnBeginLogin, webauthnFinishLogin, webauthnListCredentials, webauthnRenameCredential, webauthnDeleteCredentials, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
+const { register, verifyCode, resendVerifyCode, login, googleLogin, microsoftLogin, linkGoogle, unlinkGoogle, resendMfaOtp, verifyMfa, refresh, logoutApi, generateSsoToken, validateSsoToken, webauthnBeginRegistration, webauthnFinishRegistration, webauthnBeginLogin, webauthnFinishLogin, webauthnListCredentials, webauthnRenameCredential, webauthnDeleteCredentials, requestPasswordRecovery, verifyRecoveryStep, resetPassword } = require('../controllers/authController');
 const { validateToken } = require('../middlewares/validateToken');
 const { authLimiter } = require('../middlewares/security');
 
@@ -16,7 +16,6 @@ router.post('/verify/resend', resendVerifyCode);
 router.post('/login', [authLimiter], login);
 router.post('/google', [authLimiter], googleLogin);
 router.post('/microsoft', [authLimiter], microsoftLogin);
-router.post('/facebook', [authLimiter], facebookLogin);
 
 // Vincular/desvincular Google estando autenticado (no requiere que emails coincidan)
 router.post('/google/link', [validateToken], linkGoogle);

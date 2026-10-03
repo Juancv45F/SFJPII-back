@@ -104,14 +104,6 @@ async function getMe(req, res) {
             apellido: user.authProviders.microsoft.apellido,
             foto_perfil: user.authProviders.microsoft.foto_perfil,
             connectedAt: user.authProviders.microsoft.connectedAt
-          } : null,
-          facebook: !!user?.authProviders?.facebook?.sub,
-          facebookInfo: user?.authProviders?.facebook?.sub ? {
-            email: user.authProviders.facebook.email,
-            nombre: user.authProviders.facebook.nombre,
-            apellido: user.authProviders.facebook.apellido,
-            foto_perfil: user.authProviders.facebook.foto_perfil,
-            connectedAt: user.authProviders.facebook.connectedAt
           } : null
         },
         requiresLocation: (user.ubicaciones || []).length === 0,

@@ -1948,38 +1948,6 @@ const microsoftLogin = async (req, res) => {
     }
 };
 
-async function verifyFacebookAccessToken(accessToken) {
-    const appId = String(process.env.FACEBOOK_APP_ID || '');
-    const appSecret = String(process.env.FACEBOOK_APP_SECRET || '');
-    if (!accessToken || !appId || !appSecret) throw new Error('Inicio con Facebook no configurado.');
-    const debug = await axios.get('https://graph.facebook.com/debug_token', {
-        params: { input_token: accessToken, access_token: `${appId}|${appSecret}` }, timeout: 10000
-    });
-    const tokenData = debug?.data?.data;
-    if (!tokenData?.is_valid || String(tokenData.app_id) !== appId) throw new Error('La cuenta de Facebook no pudo verificarse.');
-    const { data } = await axios.get('https://graph.facebook.com/me', {
-        params: { fields: 'id,email,first_name,last_name,name,picture.type(large)', access_token: accessToken }, timeout: 10000
-    });
-    const email = String(data?.email || '').toLowerCase();
-    if (!data?.id || !isEmail(email)) throw new Error('Facebook debe compartir un correo válido para continuar.');
-    return {
-        sub: String(data.id), email,
-        nombre: String(data.first_name || data.name || 'Usuario').slice(0, 80),
-        apellido: String(data.last_name || 'Facebook').slice(0, 80),
-        picture: data?.picture?.data?.url || undefined
-    };
-}
-
-const facebookLogin = async (req, res) => {
-    try {
-        const profile = await verifyFacebookAccessToken(String(req.body?.accessToken || ''));
-        return await finishSocialLogin(req, res, 'facebook', profile);
-    } catch (error) {
-        child().error('facebook_login_error', { context: { message: error.message } });
-        return res.status(401).json({ message: error.message || 'No se pudo iniciar sesión con Facebook.' });
-    }
-};
-
 function isPlaceholderName(nombre, apellido) {
     const n = String(nombre || '').trim();
     const a = String(apellido || '').trim().toLowerCase();
@@ -2158,7 +2126,6 @@ module.exports = {
     webauthnDeleteCredentials,
     googleLogin,
     microsoftLogin,
-    facebookLogin,
     linkGoogle,
     unlinkGoogle,
     requestPasswordRecovery,
