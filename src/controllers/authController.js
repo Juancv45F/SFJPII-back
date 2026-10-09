@@ -22,6 +22,15 @@ const resendCooldownMs = Number(process.env.RESEND_COOLDOWN_MS) || 60 * 1000;
 
 const REFRESH_COOKIE_NAME = process.env.AUTH_REFRESH_COOKIE_NAME || 'sfjpii_rt';
 const ACCESS_COOKIE_NAME = process.env.AUTH_ACCESS_COOKIE_NAME || 'sfjpii_at';
+const PRIVACY_NOTICE_VERSION = '2026-10-09';
+
+function privacyConsentFrom(req, source) {
+    return {
+        acceptedAt: new Date(),
+        version: sanitize(req.body?.privacyNoticeVersion) || PRIVACY_NOTICE_VERSION,
+        source
+    };
+}
 
 function parseCookieHeader(header) {
     const out = {};
@@ -571,7 +580,7 @@ const register = async (req, res) => {
     const session = await mongoose.startSession();
     try {
         // Recibimos los datos estructurados desde el Frontend
-        let { nombre, apellido, email, password, confirmPassword, ubicacion, recaptchaToken } = req.body;
+        let { nombre, apellido, email, password, confirmPassword, ubicacion, recaptchaToken, privacyAccepted } = req.body;
         nombre = sanitize(nombre);
         apellido = sanitize(apellido);
         email = sanitize(email);
@@ -585,6 +594,9 @@ const register = async (req, res) => {
         );
         if (!isNonEmpty(nombre) || !isNonEmpty(apellido) || !isNonEmpty(email) || !isNonEmpty(password) || !ubicacion) {
             return res.status(400).json({ message: 'Campos requeridos faltantes.' });
+        }
+        if (privacyAccepted !== true) {
+            return res.status(400).json({ message: 'Debes aceptar el Aviso de Privacidad para crear tu cuenta.', code: 'privacy_consent_required' });
         }
         if (!isLettersSpaces(nombre) || !isLettersSpaces(apellido)) {
             return res.status(400).json({ message: 'Nombre y apellido inválidos.' });
@@ -664,6 +676,7 @@ const register = async (req, res) => {
                 verificationCodeSentAt: new Date(),
                 isVerified: false,
                 role: 'cliente',
+                privacyConsent: privacyConsentFrom(req, 'registration'),
                 ubicaciones: [{
                     calle: ubicacion.calle,
                     numero: ubicacion.numero,
@@ -1874,6 +1887,9 @@ async function finishSocialLogin(req, res, provider, profile) {
     if (!user) user = await User.findOne({ email: profile.email }).exec();
 
     if (!user) {
+        if (req.body?.privacyAccepted !== true) {
+            return res.status(400).json({ message: 'Debes aceptar el Aviso de Privacidad para crear tu cuenta.', code: 'privacy_consent_required' });
+        }
         const generatedPassword = crypto.randomBytes(32).toString('hex') + 'A1!';
         user = await User.create({
             nombre: profile.nombre,
@@ -1883,6 +1899,7 @@ async function finishSocialLogin(req, res, provider, profile) {
             passwordConfigured: false,
             isVerified: true,
             foto_perfil: profile.picture,
+            privacyConsent: privacyConsentFrom(req, provider),
             authProviders: { [provider]: buildSocialProvider(profile) }
         });
     } else {
@@ -1964,6 +1981,9 @@ const googleLogin = async (req, res) => {
         if (!user) user = await User.findOne({ email: profile.email }).exec();
 
         if (!user) {
+            if (req.body?.privacyAccepted !== true) {
+                return res.status(400).json({ message: 'Debes aceptar el Aviso de Privacidad para crear tu cuenta.', code: 'privacy_consent_required' });
+            }
             // Nuevo usuario: guardamos nombre/apellido reales de Google
             const generatedPassword = crypto.randomBytes(32).toString('hex') + 'A1!';
             user = await User.create({
@@ -1974,6 +1994,7 @@ const googleLogin = async (req, res) => {
                 passwordConfigured: false,
                 isVerified: true,
                 foto_perfil: profile.picture,
+                privacyConsent: privacyConsentFrom(req, 'google'),
                 authProviders: { google: buildGoogleProvider(profile) }
             });
         } else {

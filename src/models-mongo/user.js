@@ -43,6 +43,11 @@ const schema = new mongoose.Schema({
     }
   },
   foto_perfil: { type: String },
+  privacyConsent: {
+    acceptedAt: { type: Date },
+    version: { type: String },
+    source: { type: String, enum: ['registration', 'google', 'microsoft'] }
+  },
   verificationCode: { type: String },
   verificationCodeSentAt: { type: Date },
   isVerified: { type: Boolean, default: false },
