@@ -2,6 +2,7 @@ const { notify } = require('../services/notifications');
 const Encargo = require('../models-mongo/encargo');
 const User = require('../models-mongo/user');
 const Producto = require('../models-mongo/product');
+const { sendPushToUser } = require('./ordenController');
 const {
   puedeCrearEncargo,
   puedeCancelarEncargo,
@@ -51,6 +52,12 @@ async function crear(req, res) {
       fecha_estimada_llegada: fechaEstimadaLlegada(creadoEn),
       historial: [{ estado: 'pendiente', usuarioId: req.uid }] });
     await notify(req, { userId: req.uid, tipo: 'encargo', referenciaId: data._id, estado: 'pendiente', titulo: 'Encargo recibido', mensaje: 'Recibimos tu encargo. Te avisaremos cuando llegue.' });
+    await sendPushToUser({
+      userId: req.uid,
+      title: 'Encargo recibido',
+      body: 'Recibimos tu encargo. Te avisaremos cuando llegue.',
+      data: { encargoId: String(data._id), estado: 'pendiente', tipo: 'encargo_creado' }
+    });
     return res.status(201).json({ ok: true, data });
   } catch (err) {
     if (err.code === 11000) {
@@ -105,6 +112,12 @@ async function actualizar(req, res) {
     if (!data) return fail(res, 409, 'El encargo cambió. Actualiza la página e inténtalo de nuevo');
     const mensajes = { disponible: actual.tipo_entrega === 'domicilio' ? 'Tu encargo ya llegó a la farmacia. Prepararemos el envío.' : 'Tu encargo ya llegó. Puedes recogerlo en farmacia.', en_camino: 'Tu encargo está en camino.', entregado: 'Tu encargo fue entregado.', cancelado: 'Tu encargo fue cancelado: ' + motivo };
     await notify(req, { userId: data.userId?._id || data.userId, tipo: 'encargo', referenciaId: data._id, estado, titulo: 'Actualización de encargo', mensaje: mensajes[estado] });
+    await sendPushToUser({
+      userId: data.userId?._id || data.userId,
+      title: 'Actualización de encargo',
+      body: mensajes[estado],
+      data: { encargoId: String(data._id), estado, tipo: 'encargo_actualizado' }
+    });
     req.app.get('socketio')?.to('sala_pedidos').emit('encargo_actualizado', { encargoId: String(data._id) });
     return res.json({ ok: true, data });
   } catch { return fail(res, 500, 'No se pudo actualizar el encargo'); }

@@ -1,4 +1,5 @@
 jest.mock('../src/services/notifications', () => ({ notify: jest.fn().mockResolvedValue({}) }));
+jest.mock('../src/controllers/ordenController', () => ({ sendPushToUser: jest.fn().mockResolvedValue() }));
 const express = require('express');
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
@@ -7,6 +8,7 @@ const Producto = require('../src/models-mongo/product');
 const Encargo = require('../src/models-mongo/encargo');
 const router = require('../src/routes/encargosRoutes');
 const carritoRouter = require('../src/routes/carritoRoutes');
+const { sendPushToUser } = require('../src/controllers/ordenController');
 
 const uid = '111111111111111111111111';
 const pid = '222222222222222222222222';
@@ -26,6 +28,7 @@ const existing = (estado = 'pendiente', tipo_entrega = 'recoger', createdAt = '2
 });
 
 beforeEach(() => {
+  sendPushToUser.mockClear();
   process.env.JWT_SECRET = 'encargos-test-secret';
   app = express(); app.use(express.json()); app.use('/encargos', router); app.use('/carrito', carritoRouter);
   app.set('clock', () => new Date('2026-09-28T18:00:00.000Z'));
@@ -250,4 +253,18 @@ test('un producto eliminado queda como conflicto y no se pierde silenciosamente'
 test('persistir encargo genera notificación dirigida a su propietario', async () => {
   await auth('post', '/encargos').send(payload());
   expect(require('../src/services/notifications').notify).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: uid, tipo: 'encargo', referenciaId: eid, estado: 'pendiente' }));
+});
+test('cambiar el estado de un encargo envía push al cliente propietario', async () => {
+  user.role = 'admin';
+  Encargo.findOne.mockImplementation(() => query(existing('pendiente')));
+  Encargo.findOneAndUpdate.mockImplementation(() => query({
+    ...existing('disponible'), userId: uid, tipo_entrega: 'recoger'
+  }));
+  const res = await auth('patch', `/encargos/${eid}/estado`).send({ estado: 'disponible' });
+  expect(res.status).toBe(200);
+  expect(sendPushToUser).toHaveBeenCalledWith(expect.objectContaining({
+    userId: uid,
+    title: 'Actualización de encargo',
+    data: { encargoId: eid, estado: 'disponible', tipo: 'encargo_actualizado' }
+  }));
 });

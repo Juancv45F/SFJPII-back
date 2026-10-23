@@ -616,5 +616,6 @@ module.exports = {
     crearPedido,
     obtenerPedidos,
     obtenerPedidoPorId,
-    actualizarEstadoPedido
+    actualizarEstadoPedido,
+    sendPushToUser
 };
