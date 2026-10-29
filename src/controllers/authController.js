@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { child } = require('../utils/logger');
+const { normalizeMethod, lookupLocation, isNewDevice, emitToUser } = require('../services/sessionSecurity');
 const { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } = require('@simplewebauthn/server');
 const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
@@ -526,7 +527,47 @@ async function sendVerificationEmail({ to, code, logger }) {
     return sentByEmail;
 }
 
-async function persistRefreshToken({ user, refreshToken, req, isRotation = false, oldTokenHash = null }) {
+const LOGIN_METHOD_LABELS = { password: 'correo y contraseña', google: 'Google', microsoft: 'Microsoft', passkey: 'passkey', qr: 'código QR' };
+
+function describeUserAgent(ua) {
+    const v = String(ua || '');
+    const os = /Android/i.test(v) ? 'Android' : /iPhone|iPad/i.test(v) ? 'iOS' : /Windows/i.test(v) ? 'Windows' : /Mac OS X/i.test(v) ? 'macOS' : /Linux/i.test(v) ? 'Linux' : '';
+    const browser = /Edg\//.test(v) ? 'Edge' : /OPR\/|Opera/.test(v) ? 'Opera' : /SamsungBrowser/.test(v) ? 'Samsung Internet' : /Chrome\//.test(v) ? 'Chrome' : /Firefox\//.test(v) ? 'Firefox' : /Safari\//.test(v) ? 'Safari' : 'Navegador desconocido';
+    return os ? `${browser} en ${os}` : browser;
+}
+
+// Aviso por correo y en tiempo real cuando la cuenta se abre en un dispositivo nuevo.
+async function sendNewLoginAlert({ req, user, entry }) {
+    const logger = child({ userId: String(user._id) });
+    const device = describeUserAgent(entry.userAgent);
+    const method = LOGIN_METHOD_LABELS[entry.method] || 'inicio de sesión';
+    const when = new Date().toLocaleString('es-MX', { timeZone: process.env.TZ || 'America/Mexico_City' });
+
+    emitToUser(req, user._id, 'nuevo_acceso', {
+        sessionId: entry.sessionId, device, method: entry.method || null,
+        location: entry.location || null, ip: entry.ip || null, at: new Date().toISOString()
+    });
+
+    if (!user.email) return;
+    const subject = 'Nuevo inicio de sesión en tu cuenta';
+    const text = `Hola ${user.nombre || ''},\n\nDetectamos un inicio de sesión en tu cuenta de Farmacia Juan Pablo II desde un dispositivo nuevo:\n\n` +
+        `• Dispositivo: ${device}\n• Método: ${method}\n• Ubicación aproximada: ${entry.location || 'No disponible'}\n• Dirección IP: ${entry.ip || 'No disponible'}\n• Fecha: ${when}\n\n` +
+        `Si fuiste tú, puedes ignorar este mensaje. Si no reconoces este acceso, entra a Configuración > Sesiones activas, cierra esa sesión y cambia tu contraseña.\n\nSaludos.`;
+    try {
+        if (getHttpEmailProvider() && await sendEmailViaHttp({ to: user.email, subject, text, logger })) return;
+        const smtpCfg = getSmtpConfig();
+        const transporter = await getSmtpTransporter(logger);
+        if (transporter && smtpCfg) {
+            await transporter.sendMail({ from: smtpCfg.from, to: user.email, subject, text });
+            return;
+        }
+    } catch (err) {
+        logger.error('new_login_alert_failed', { context: { error: err.message } });
+    }
+    if (isEmailSimulationEnabled()) console.log(`🛡️  [ALERTA SIMULADA] Nuevo acceso para ${user.email}: ${device}, ${method}, ${entry.location || entry.ip}`);
+}
+
+async function persistRefreshToken({ user, refreshToken, req, isRotation = false, oldTokenHash = null, method = null }) {
     const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
     const decoded = jwt.verify(refreshToken, refreshSecret);
     const expMs = decoded && decoded.exp ? decoded.exp * 1000 : (Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -541,24 +582,37 @@ async function persistRefreshToken({ user, refreshToken, req, isRotation = false
 
     user.refreshTokens = Array.isArray(user.refreshTokens) ? user.refreshTokens : [];
 
+    let previous = null;
     if (isRotation && oldTokenHash) {
         // Si es rotación, buscamos el token viejo y lo marcamos como revocado
         const idx = user.refreshTokens.findIndex(t => t.tokenHash === oldTokenHash);
         if (idx !== -1) {
+            previous = user.refreshTokens[idx];
             user.refreshTokens[idx].revokedAt = new Date();
             user.refreshTokens[idx].replacedByTokenHash = tokenHash;
         }
     }
 
+    const ipValue = ip ? String(ip) : 'Unknown';
+    const uaValue = userAgent ? String(userAgent).substring(0, 500) : 'Unknown';
+    // En rotaciones se conserva el método de acceso; la ubicación solo se recalcula si cambió la IP.
+    const location = previous && previous.ip === ipValue && previous.location
+        ? previous.location
+        : await lookupLocation(ipValue);
+    const newDevice = !isRotation && isNewDevice(user, uaValue);
+
     // Agregar la nueva sesión / token
-    user.refreshTokens.push({
+    const entry = {
         sessionId,
         tokenHash,
         expiresAt: new Date(expMs),
         lastUsedAt: new Date(),
-        userAgent: userAgent ? String(userAgent).substring(0, 500) : 'Unknown',
-        ip: ip ? String(ip) : 'Unknown'
-    });
+        userAgent: uaValue,
+        ip: ipValue,
+        method: normalizeMethod(method) || previous?.method || null,
+        location: location || null
+    };
+    user.refreshTokens.push(entry);
 
     // Limitar número de tokens (opcional, para evitar saturar el documento)
     const maxTokens = Number(process.env.JWT_REFRESH_MAX_TOKENS) || 20;
@@ -574,6 +628,7 @@ async function persistRefreshToken({ user, refreshToken, req, isRotation = false
     }
 
     await user.save();
+    if (newDevice) sendNewLoginAlert({ req, user, entry }).catch(() => {});
 }
 // REGISTRO COMPLETO (Usuario + Ubicación + Captcha)
 const register = async (req, res) => {
@@ -877,7 +932,7 @@ const login = async (req, res) => {
 
         const token = createAccessToken(user);
         const refreshToken = createRefreshToken(user);
-        await persistRefreshToken({ user, refreshToken, req });
+        await persistRefreshToken({ user, refreshToken, req, method: 'password' });
 
         setRefreshCookie(req, res, refreshToken);
         if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
@@ -1065,7 +1120,7 @@ const verifyMfa = async (req, res) => {
 
         const token = createAccessToken(user);
         const refreshToken = createRefreshToken(user);
-        await persistRefreshToken({ user, refreshToken, req });
+        await persistRefreshToken({ user, refreshToken, req, method: 'password' });
 
         setRefreshCookie(req, res, refreshToken);
         if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
@@ -1430,7 +1485,7 @@ const validateSsoToken = async (req, res) => {
         // Emitir nuevos tokens de sesión para App B
         const token = createAccessToken(user);
         const refreshToken = createRefreshToken(user);
-        await persistRefreshToken({ user, refreshToken, req });
+        await persistRefreshToken({ user, refreshToken, req, method: 'qr' });
 
         res.json({
             message: 'SSO Exitoso',
@@ -1773,7 +1828,7 @@ const webauthnFinishLogin = async (req, res) => {
 
         const token = createAccessToken(user);
         const refreshToken = createRefreshToken(user);
-        await persistRefreshToken({ user, refreshToken, req });
+        await persistRefreshToken({ user, refreshToken, req, method: 'passkey' });
 
         setRefreshCookie(req, res, refreshToken);
         if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
@@ -1917,7 +1972,7 @@ async function finishSocialLogin(req, res, provider, profile) {
 
     const token = createAccessToken(user);
     const refreshToken = createRefreshToken(user);
-    await persistRefreshToken({ user, refreshToken, req });
+    await persistRefreshToken({ user, refreshToken, req, method: provider });
     setRefreshCookie(req, res, refreshToken);
     if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
     return res.json({
@@ -2013,7 +2068,7 @@ const googleLogin = async (req, res) => {
 
         const token = createAccessToken(user);
         const refreshToken = createRefreshToken(user);
-        await persistRefreshToken({ user, refreshToken, req });
+        await persistRefreshToken({ user, refreshToken, req, method: 'google' });
         setRefreshCookie(req, res, refreshToken);
         if (shouldUseAccessCookie()) setAccessCookie(req, res, token);
         return res.json({

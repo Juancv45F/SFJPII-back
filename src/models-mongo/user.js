@@ -116,7 +116,9 @@ const schema = new mongoose.Schema({
     revokedAt: { type: Date },
     replacedByTokenHash: { type: String },
     userAgent: { type: String },
-    ip: { type: String }
+    ip: { type: String },
+    method: { type: String },
+    location: { type: String }
   }],
   pushTokens: [{
     token: { type: String, required: true },

@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models-mongo/user');
 const { Notification } = require('../services/notifications');
 const { child } = require('../utils/logger');
+const { emitSessionsRevoked } = require('../services/sessionSecurity');
 const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
 
@@ -47,6 +48,8 @@ function summarizeSessions(user, currentSessionId) {
       expiresAt: expiresAt || null,
       userAgent: t.userAgent || null,
       ip: t.ip || null,
+      method: t.method || null,
+      location: t.location || null,
       active: false,
       isCurrent: currentSessionId ? sid === String(currentSessionId) : false
     };
@@ -58,7 +61,9 @@ function summarizeSessions(user, currentSessionId) {
       next.lastUsedAt = lastUsedAt;
       next.userAgent = t.userAgent || next.userAgent;
       next.ip = t.ip || next.ip;
+      next.location = t.location || next.location;
     }
+    if (!next.method && t.method) next.method = t.method;
     if (expiresAt && (!next.expiresAt || expiresAt.getTime() > new Date(next.expiresAt).getTime())) {
       next.expiresAt = expiresAt;
     }
@@ -548,6 +553,7 @@ async function revokeSession(req, res) {
     }
 
     await user.save();
+    if (revokedAny) emitSessionsRevoked(req, user._id, [sessionId]);
     return res.json({ message: revokedAny ? 'Sesión cerrada' : 'Sesión no encontrada' });
   } catch (error) {
     const logger = child();
@@ -586,12 +592,14 @@ async function revokeOtherSessions(req, res) {
     const currentSessionId = String(entry.sessionId || tokenHash);
     const now = new Date();
     let revokedCount = 0;
+    const revokedIds = new Set();
     if (Array.isArray(user.refreshTokens)) {
       for (const t of user.refreshTokens) {
         if (!t) continue;
         const sid = String(t.sessionId || t.tokenHash || '');
         if (sid && sid !== currentSessionId && !t.revokedAt) {
           revokedCount += 1;
+          revokedIds.add(sid);
           t.revokedAt = now;
           t.lastUsedAt = now;
         }
@@ -599,6 +607,7 @@ async function revokeOtherSessions(req, res) {
     }
 
     await user.save();
+    emitSessionsRevoked(req, user._id, [...revokedIds]);
     return res.json({ message: 'Sesiones remotas cerradas', revokedCount });
   } catch (error) {
     const logger = child();
