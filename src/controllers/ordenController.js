@@ -425,17 +425,18 @@ const crearPedido = async (req, res) => {
 
         if (savedPedidoId) {
             await notify(req, { userId, tipo: 'pedido', referenciaId: savedPedidoId, estado: 'pendiente', titulo: 'Pedido recibido', mensaje: 'Tu pedido fue recibido y está en estado pendiente.' });
-            await sendPushToUser({
+            // Sin await: FCM lento o caído no debe retrasar ni romper la respuesta.
+            sendPushToUser({
                 userId,
                 title: 'Pedido creado',
                 body: 'Tu pedido fue recibido y está en estado pendiente.',
                 data: { pedidoId: savedPedidoId, tipo: 'pedido_creado' }
-            });
-            await sendPushToAdmins({
+            }).catch(err => console.error('[PUSH] Error en segundo plano', err?.message));
+            sendPushToAdmins({
                 title: 'Nuevo pedido',
                 body: `${clienteNombre || 'Cliente'} creó un pedido.`,
                 data: { pedidoId: savedPedidoId, tipo: 'nuevo_pedido', cliente: clienteNombre, direccion: direccionTexto, total }
-            });
+            }).catch(err => console.error('[PUSH] Error en segundo plano', err?.message));
         }
 
         res.status(201).json({
@@ -597,12 +598,12 @@ const actualizarEstadoPedido = async (req, res) => {
         if (estado) {
             const mensajeCliente = getMensajeEstadoCliente(estado);
             if (mensajeCliente) {
-                await sendPushToUser({
+                sendPushToUser({
                     userId: clienteId,
                     title: 'Actualización de Pedido',
                     body: mensajeCliente,
                     data: { pedidoId: String(pedido._id), estado, tipo: 'pedido_actualizado' }
-                });
+                }).catch(err => console.error('[PUSH] Error en segundo plano', err?.message));
             }
         }
 
