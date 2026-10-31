@@ -5,6 +5,7 @@ const User = require('../models-mongo/user');
 const { Notification } = require('../services/notifications');
 const { child } = require('../utils/logger');
 const { emitSessionsRevoked } = require('../services/sessionSecurity');
+const { REFRESH_COOKIE_NAME, getCookie } = require('./authController');
 const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
 
@@ -513,7 +514,7 @@ async function listSessions(req, res) {
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
 
     let currentSessionId = null;
-    const refreshTokenHeader = req.header('x-refresh-token');
+    const refreshTokenHeader = getCookie(req, REFRESH_COOKIE_NAME) || req.header('x-refresh-token');
     if (refreshTokenHeader) {
       const tokenHash = sha256(refreshTokenHeader);
       const entry = (user.refreshTokens || []).find(t => t && t.tokenHash === tokenHash && !t.revokedAt);
@@ -564,8 +565,7 @@ async function revokeSession(req, res) {
 
 async function revokeOtherSessions(req, res) {
   try {
-    let { refreshToken } = req.body || {};
-    refreshToken = sanitize(refreshToken);
+    let refreshToken = sanitize(getCookie(req, REFRESH_COOKIE_NAME) || req.body?.refreshToken);
     if (!isNonEmpty(refreshToken)) return res.status(400).json({ message: 'Falta refreshToken' });
 
     const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;

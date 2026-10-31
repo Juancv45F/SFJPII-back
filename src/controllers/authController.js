@@ -98,8 +98,16 @@ function shouldExposeAccessTokenInBody() {
     return true;
 }
 
+// El refresh token viaja solo en cookie HttpOnly; exponerlo en el body (y aceptarlo
+// de vuelta en /refresh) queda como opt-in para clientes legacy.
 function shouldExposeRefreshTokenInBody() {
-    return true;
+    return String(process.env.AUTH_EXPOSE_REFRESH_TOKEN || 'false').toLowerCase() === 'true';
+}
+
+// sid del refresh token: identifica la sesión de este dispositivo sin exponer el token
+function sessionIdOf(refreshToken) {
+    const decoded = jwt.decode(String(refreshToken || ''));
+    return decoded?.sid ? String(decoded.sid) : null;
 }
 
 function remainingCooldownSec(sentAt) {
@@ -941,6 +949,7 @@ const login = async (req, res) => {
             message: 'Bienvenido',
             ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
+            sessionId: sessionIdOf(refreshToken),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -1129,6 +1138,7 @@ const verifyMfa = async (req, res) => {
             message: 'Bienvenido',
             ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
+            sessionId: sessionIdOf(refreshToken),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -1147,9 +1157,8 @@ const verifyMfa = async (req, res) => {
 
 const refresh = async (req, res) => {
     try {
-        let { refreshToken } = req.body || {};
-        refreshToken = sanitize(refreshToken);
-        if (!isNonEmpty(refreshToken)) refreshToken = sanitize(getCookie(req, REFRESH_COOKIE_NAME));
+        let refreshToken = sanitize(getCookie(req, REFRESH_COOKIE_NAME));
+        if (!isNonEmpty(refreshToken) && shouldExposeRefreshTokenInBody()) refreshToken = sanitize(req.body?.refreshToken);
         if (!isNonEmpty(refreshToken)) return res.status(400).json({ message: 'Falta refreshToken' });
 
         const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
@@ -1213,6 +1222,7 @@ const refresh = async (req, res) => {
         return res.json({
             ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken: newRefreshToken } : {}),
+            sessionId: String(currentSessionId),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -1837,6 +1847,7 @@ const webauthnFinishLogin = async (req, res) => {
             message: 'Bienvenido',
             ...(shouldExposeAccessTokenInBody() ? { token } : {}),
             ...(shouldExposeRefreshTokenInBody() ? { refreshToken } : {}),
+            sessionId: sessionIdOf(refreshToken),
             user: {
                 id: String(user._id),
                 nombre: user.nombre,
@@ -2183,6 +2194,8 @@ const webauthnDeleteCredentials = async (req, res) => {
 
 
 module.exports = {
+    REFRESH_COOKIE_NAME,
+    getCookie,
     register,
     verifyCode,
     resendVerifyCode,

@@ -160,4 +160,31 @@ describe('Test de seguridad', () => {
             User.deleteOne({ _id: u2._id }).exec()
         ]);
     });
+
+    test('CORS no refleja orígenes fuera de la allow-list', async () => {
+        const evil = await request(app)
+            .options('/api/auth/login')
+            .set('Origin', 'https://evil.example')
+            .set('Access-Control-Request-Method', 'POST');
+
+        expect(evil.headers['access-control-allow-origin']).toBeUndefined();
+        expect(evil.headers['access-control-allow-credentials']).toBeUndefined();
+        expect(evil.headers['x-powered-by']).toBeUndefined();
+
+        const ok = await request(app)
+            .options('/api/auth/login')
+            .set('Origin', 'http://localhost:8100')
+            .set('Access-Control-Request-Method', 'POST');
+
+        expect(ok.headers['access-control-allow-origin']).toBe('http://localhost:8100');
+        expect(ok.headers['access-control-allow-credentials']).toBe('true');
+    });
+
+    test('/refresh ignora el refreshToken del body (solo cookie HttpOnly)', async () => {
+        const response = await request(app)
+            .post('/api/auth/refresh')
+            .send({ refreshToken: 'cualquier-token' });
+
+        expect(response.status).toBe(400);
+    });
 });

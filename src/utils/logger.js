@@ -47,11 +47,13 @@ function localTimestamp() {
 
 function redact(obj) {
   if (!obj || typeof obj !== 'object') return obj;
-  const SENSITIVE_KEYS = ['password', 'token', 'authorization', 'auth', 'secret', 'jwt', 'cookie'];
+  const SENSITIVE_KEYS = ['auth'];
+  // Coincidencia parcial: cubre refreshToken, mfaToken, newPassword, x-refresh-token, etc.
+  const SENSITIVE_PARTS = ['password', 'token', 'authorization', 'secret', 'jwt', 'cookie', 'otp'];
   const out = {};
   for (const k of Object.keys(obj)) {
     const lower = k.toLowerCase();
-    if (SENSITIVE_KEYS.includes(lower)) {
+    if (SENSITIVE_KEYS.includes(lower) || SENSITIVE_PARTS.some(p => lower.includes(p))) {
       out[k] = '[REDACTED]';
     } else if (typeof obj[k] === 'object' && obj[k] !== null) {
       out[k] = redact(obj[k]);

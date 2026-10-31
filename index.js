@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
+const { corsOptions, corsOrigin } = require('./src/config/cors');
 const { connect } = require('./src/config/mongoose');
 const { generalLimiter } = require('./src/middlewares/security');
 const productRoutes = require('./src/routes/productRoutes');
@@ -54,24 +55,16 @@ app.set('trust proxy', 1); // Confía en el primer proxy (necesario para Render/
 app.set('views', path.join(__dirname, 'src/views'));
 app.set('view engine', 'pug');
 
-// 1. CONFIGURACIÓN DE CORS (DEBE IR ANTES DE LOS RATE LIMITERS)
-app.use(cors({
-    origin: true, // Refleja el origen de la petición si coincide (útil para desarrollo y localhost)
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'x-token',
-        'x-refresh-token',
-        'x-correlation-id'
-    ]
-})); 
+// Sin fingerprinting del framework
+app.disable('x-powered-by');
 
-// 2. SEGURIDAD EXTRA (HELMET)
+// 1. SEGURIDAD EXTRA (HELMET) — antes de CORS para que también aplique a los preflight OPTIONS
 app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" }
-})); 
+}));
+
+// 2. CONFIGURACIÓN DE CORS (DEBE IR ANTES DE LOS RATE LIMITERS) — allow-list, nunca reflejar el Origin
+app.use(cors(corsOptions));
 
 // 3. PROTECCIÓN CONTRA DOS / RATE LIMITING
 app.use(generalLimiter); 
@@ -125,7 +118,8 @@ const server = http.createServer(app);
 // Configurar Socket.io
 const io = new Server(server, {
     cors: {
-        origin: "*", // En producción cambiar esto por la URL del Dominio
+        origin: corsOrigin,
+        credentials: true,
         methods: ["GET", "POST"]
     }
 });
